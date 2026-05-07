@@ -1,4 +1,3 @@
-import { useState } from 'react';
 import { useAuth } from '@/context/FirebaseAuthContext';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -7,7 +6,7 @@ import { Badge } from '@/components/ui/badge';
 import { Download } from 'lucide-react';
 import { toast } from 'sonner';
 import jsPDF from 'jspdf';
-import 'jspdf-autotable';
+import autoTable from 'jspdf-autotable';
 
 interface Client {
   id: string;
@@ -52,10 +51,11 @@ interface DelinquentClient {
 
 export default function DelinquentClientsReport() {
   const { clients, parseLocalDate } = useAuth();
-  const [delinquentClients, setDelinquentClients] = useState<DelinquentClient[]>([]);
 
   // Calcular clientes deudores
   const getDelinquentClients = (): DelinquentClient[] => {
+    if (!clients || clients.length === 0) return [];
+    
     const today = new Date();
     const todayMid = new Date(today.getFullYear(), today.getMonth(), today.getDate());
 
@@ -66,10 +66,13 @@ export default function DelinquentClientsReport() {
           if (cuota.numero <= 0) return false; // Excluir iniciales
           if (cuota.estado === 'pagado') return false; // Excluir pagadas
 
-          const vencDate = parseLocalDate(cuota.vencimiento);
-          const vencMid = new Date(vencDate.getFullYear(), vencDate.getMonth(), vencDate.getDate());
-
-          return vencMid.getTime() < todayMid.getTime(); // Vencidas antes de hoy
+          try {
+            const vencDate = parseLocalDate(cuota.vencimiento);
+            const vencMid = new Date(vencDate.getFullYear(), vencDate.getMonth(), vencDate.getDate());
+            return vencMid.getTime() < todayMid.getTime(); // Vencidas antes de hoy
+          } catch {
+            return false;
+          }
         });
 
         return {
@@ -84,14 +87,14 @@ export default function DelinquentClientsReport() {
   };
 
   const handleDownloadReport = () => {
-    const delinquent = getDelinquentClients();
-
-    if (delinquent.length === 0) {
-      toast.error('No hay clientes deudores de 2 o más cuotas para descargar.');
-      return;
-    }
-
     try {
+      const delinquent = getDelinquentClients();
+
+      if (delinquent.length === 0) {
+        toast.error('No hay clientes deudores de 2 o más cuotas para descargar.');
+        return;
+      }
+
       const pdf = new jsPDF({
         orientation: 'landscape',
         unit: 'mm',
@@ -100,7 +103,7 @@ export default function DelinquentClientsReport() {
 
       // Título
       pdf.setFontSize(16);
-      pdf.text('Reporte de Clientes Deudores (2+ Cuotas Atrasadas)', 10, 10);
+      pdf.text('Reporte de Clientes Deudores (2+ Cuotas Atrasadas)', 14, 15);
 
       // Fecha de generación
       pdf.setFontSize(10);
@@ -110,7 +113,7 @@ export default function DelinquentClientsReport() {
         month: 'long',
         day: 'numeric',
       });
-      pdf.text(`Generado: ${dateStr}`, 10, 18);
+      pdf.text(`Generado: ${dateStr}`, 14, 22);
 
       // Tabla con datos
       const tableData = delinquent.map((item) => [
@@ -122,35 +125,42 @@ export default function DelinquentClientsReport() {
         `S/ ${item.totalOverdueAmount.toFixed(2)}`,
       ]);
 
-      (pdf as any).autoTable({
+      autoTable(pdf, {
         head: [['Cliente', 'DNI', 'Manzana', 'Lote', 'Cuotas Atrasadas', 'Monto Total']],
         body: tableData,
-        startY: 25,
+        startY: 28,
         headStyles: {
           fillColor: [41, 128, 185],
           textColor: 255,
           fontStyle: 'bold',
           halign: 'center',
+          fontSize: 11,
         },
         bodyStyles: {
           textColor: 0,
           halign: 'left',
+          fontSize: 10,
         },
         columnStyles: {
-          0: { cellWidth: 60 },
-          1: { cellWidth: 30 },
-          2: { cellWidth: 20 },
-          3: { cellWidth: 20 },
+          0: { cellWidth: 60, halign: 'left' },
+          1: { cellWidth: 30, halign: 'center' },
+          2: { cellWidth: 20, halign: 'center' },
+          3: { cellWidth: 20, halign: 'center' },
           4: { halign: 'center', cellWidth: 25 },
           5: { halign: 'right', cellWidth: 35 },
         },
-        margin: 10,
-        didDrawPage: () => {
+        margin: { top: 10, right: 10, bottom: 15, left: 10 },
+        didDrawPage: (data) => {
           // Footer
           const pageSize = pdf.internal.pageSize;
           const pageHeight = pageSize.getHeight();
           pdf.setFontSize(8);
-          pdf.text(`Total de clientes deudores: ${delinquent.length}`, 10, pageHeight - 10);
+          pdf.text(`Total de clientes deudores: ${delinquent.length}`, 14, pageHeight - 10);
+          
+          // Número de página
+          const pageCount = (pdf as any).internal.getNumberOfPages?.() || 1;
+          const pageNumber = data.pageNumber || 1;
+          pdf.text(`Página ${pageNumber} de ${pageCount}`, pageSize.getWidth() - 25, pageHeight - 10);
         },
       });
 
@@ -158,7 +168,7 @@ export default function DelinquentClientsReport() {
       toast.success('Reporte descargado correctamente');
     } catch (error) {
       console.error('Error al generar PDF:', error);
-      toast.error('Error al generar el reporte');
+      toast.error('Error al generar el reporte. Intenta de nuevo.');
     }
   };
 
@@ -168,7 +178,7 @@ export default function DelinquentClientsReport() {
     <Card>
       <CardHeader className="flex flex-row items-center justify-between">
         <CardTitle>Clientes Deudores (2+ Cuotas Atrasadas)</CardTitle>
-        <Button onClick={handleDownloadReport} className="gap-2">
+        <Button onClick={handleDownloadReport} className="gap-2" disabled={delinquent.length === 0}>
           <Download className="w-4 h-4" />
           Descargar Reporte
         </Button>
