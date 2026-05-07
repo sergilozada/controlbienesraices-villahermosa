@@ -155,7 +155,7 @@ export default function Dashboard() {
 
       <div className="w-full px-4 sm:px-6 lg:px-8 py-8">
         <Tabs value={activeTab} onValueChange={setActiveTab}>
-          <TabsList className="grid w-full grid-cols-4 lg:grid-cols-7 mb-8">
+          <TabsList className="grid w-full grid-cols-4 lg:grid-cols-8 mb-8">
             {menuItems.map((item) => {
               const Icon = item.icon;
               return (
