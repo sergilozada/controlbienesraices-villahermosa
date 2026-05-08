@@ -119,14 +119,17 @@ export default function DelinquentClientsReport() {
       const tableData = delinquent.map((item) => [
         `${item.client.nombre1} ${item.client.nombre2 || ''}`.trim(),
         item.client.dni1,
+        item.client.celular1 || '-',
         item.client.manzana,
         item.client.lote,
         item.overdueCuotasCount.toString(),
         `S/ ${item.totalOverdueAmount.toFixed(2)}`,
       ]);
 
+      const totalOverdueSum = delinquent.reduce((sum, item) => sum + item.totalOverdueAmount, 0);
+
       autoTable(pdf, {
-        head: [['Cliente', 'DNI', 'Manzana', 'Lote', 'Cuotas Atrasadas', 'Monto Total']],
+        head: [['Cliente', 'DNI', 'Celular', 'Manzana', 'Lote', 'Cuotas Atrasadas', 'Monto Total']],
         body: tableData,
         startY: 28,
         headStyles: {
@@ -142,12 +145,13 @@ export default function DelinquentClientsReport() {
           fontSize: 10,
         },
         columnStyles: {
-          0: { cellWidth: 60, halign: 'left' },
+          0: { cellWidth: 55, halign: 'left' },
           1: { cellWidth: 30, halign: 'center' },
-          2: { cellWidth: 20, halign: 'center' },
+          2: { cellWidth: 35, halign: 'center' },
           3: { cellWidth: 20, halign: 'center' },
-          4: { halign: 'center', cellWidth: 25 },
-          5: { halign: 'right', cellWidth: 35 },
+          4: { cellWidth: 20, halign: 'center' },
+          5: { halign: 'center', cellWidth: 25 },
+          6: { halign: 'right', cellWidth: 35 },
         },
         margin: { top: 10, right: 10, bottom: 15, left: 10 },
         didDrawPage: (data) => {
@@ -163,6 +167,10 @@ export default function DelinquentClientsReport() {
           pdf.text(`Página ${pageNumber} de ${pageCount}`, pageSize.getWidth() - 25, pageHeight - 10);
         },
       });
+
+      const finalY = (pdf as any).lastAutoTable?.finalY || 28;
+      pdf.setFontSize(11);
+      pdf.text(`Total general de deuda: S/ ${totalOverdueSum.toFixed(2)}`, 14, finalY + 10);
 
       pdf.save('reporte_clientes_deudores.pdf');
       toast.success('Reporte descargado correctamente');

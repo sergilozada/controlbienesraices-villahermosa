@@ -68,6 +68,39 @@ export default function ClientList({ filterType = 'all' }: ClientListProps) {
   const [overdueYear, setOverdueYear] = useState<number>(new Date().getFullYear());
   // Initialize paymentDate as local ISO (yyyy-MM-dd) to avoid timezone shifts
   const [paymentDate, setPaymentDate] = useState(formatLocalISO());
+  const [editingPhoneClientId, setEditingPhoneClientId] = useState<string | null>(null);
+  const [editCelular1, setEditCelular1] = useState('');
+  const [editCelular2, setEditCelular2] = useState('');
+
+  const startPhoneEdit = (client: Client) => {
+    setEditingPhoneClientId(client.id);
+    setEditCelular1(client.celular1 || '');
+    setEditCelular2(client.celular2 || '');
+  };
+
+  const cancelPhoneEdit = () => {
+    setEditingPhoneClientId(null);
+    setEditCelular1('');
+    setEditCelular2('');
+  };
+
+  const savePhoneEdit = async () => {
+    if (!editingPhoneClientId) return;
+
+    const payload: Partial<Client> = {};
+    payload.celular1 = editCelular1.trim();
+    payload.celular2 = editCelular2.trim();
+
+    try {
+      await updateClient(editingPhoneClientId, payload);
+      toast.success('Teléfonos actualizados correctamente');
+      cancelPhoneEdit();
+    } catch (err) {
+      console.error('Error actualizando teléfonos:', err);
+      toast.error('No se pudo actualizar los teléfonos');
+    }
+  };
+
   // Información bancaria reutilizable (evitar inconsistencias)
   const bankAccountSoles = '38006500681006';
   const bankCCI = '002-3801-0650-0681-00645';
@@ -908,7 +941,42 @@ export default function ClientList({ filterType = 'all' }: ClientListProps) {
                     <TableCell>{index + 1}</TableCell>
                     <TableCell>{client.nombre1} {client.nombre2}</TableCell>
                     <TableCell>{client.dni1} {client.dni2}</TableCell>
-                    <TableCell>{client.celular1} {client.celular2}</TableCell>
+                    <TableCell>
+                      {editingPhoneClientId === client.id ? (
+                        <div className="space-y-2">
+                          <Input
+                            value={editCelular1}
+                            onChange={(e) => setEditCelular1(e.target.value)}
+                            placeholder="Celular 1"
+                            className="w-full"
+                          />
+                          <Input
+                            value={editCelular2}
+                            onChange={(e) => setEditCelular2(e.target.value)}
+                            placeholder="Celular 2"
+                            className="w-full"
+                          />
+                          <div className="flex gap-2">
+                            <Button size="sm" onClick={savePhoneEdit}>
+                              Guardar
+                            </Button>
+                            <Button size="sm" variant="outline" onClick={cancelPhoneEdit}>
+                              Cancelar
+                            </Button>
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="flex items-center gap-2">
+                          <div className="flex flex-col text-sm">
+                            <span>{client.celular1 || '-'}</span>
+                            <span className="text-xs text-slate-500">{client.celular2 || ''}</span>
+                          </div>
+                          <Button size="sm" variant="outline" onClick={() => startPhoneEdit(client)}>
+                            <Edit className="w-4 h-4" />
+                          </Button>
+                        </div>
+                      )}
+                    </TableCell>
                     <TableCell>{client.email1} {client.email2}</TableCell>
                     <TableCell>{client.manzana}</TableCell>
                     <TableCell>{client.lote}</TableCell>
