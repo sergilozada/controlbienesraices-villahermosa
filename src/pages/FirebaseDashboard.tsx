@@ -139,7 +139,7 @@ export default function FirebaseDashboard() {
           <div className="flex justify-between items-center h-16">
             <h1 className="text-xl font-semibold text-gray-900 flex items-center gap-2">
               <Cloud className="w-5 h-5 text-blue-600" />
-              Sistema de Bienes Raíces (Firebase)
+              Sistema de Bienes Raíces
             </h1>
             <div className="flex items-center space-x-4">
               <span className="text-sm text-gray-600">
