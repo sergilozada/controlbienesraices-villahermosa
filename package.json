@@ -1,6 +1,9 @@
 {
   "name": "control-bienesraices",
-  "type": "commonjs",
+  "version": "1.0.0",
+  "description": "Sistema de gestión de bienes raíces con Firebase",
+  "author": "Tu Nombre",
+  "type": "module",
   "packageManager": "pnpm@8.10.0",
   "main": "public/electron.js",
   "homepage": "./",
@@ -114,18 +117,16 @@
     "win": {
       "target": [
         {
-          "target": "nsis",
-          "arch": [
-            "x64"
-          ]
-        },
-        {
           "target": "portable",
           "arch": [
             "x64"
           ]
         }
-      ]
+      ],
+      "certificateFile": null,
+      "certificatePassword": null,
+      "sign": false,
+      "verifyUpdateCodeSignature": false
     },
     "nsis": {
       "oneClick": false,
@@ -134,3 +135,4 @@
       "createStartMenuShortcut": true
     }
   }
+}
