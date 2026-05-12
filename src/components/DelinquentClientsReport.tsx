@@ -1,8 +1,11 @@
+import { useState } from 'react';
 import { useAuth } from '@/context/FirebaseAuthContext';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Badge } from '@/components/ui/badge';
+import { Label } from '@/components/ui/label';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Download } from 'lucide-react';
 import { toast } from 'sonner';
 import jsPDF from 'jspdf';
@@ -51,6 +54,22 @@ interface DelinquentClient {
 
 export default function DelinquentClientsReport() {
   const { clients, parseLocalDate } = useAuth();
+  const [overdueCountFilter, setOverdueCountFilter] = useState<'all' | '1' | '2' | '3' | '4+'>('all');
+
+  const getFilterLabel = () => {
+    switch (overdueCountFilter) {
+      case '1':
+        return 'Solo 1 cuota atrasada';
+      case '2':
+        return 'Solo 2 cuotas atrasadas';
+      case '3':
+        return 'Solo 3 cuotas atrasadas';
+      case '4+':
+        return '4 o más cuotas atrasadas';
+      default:
+        return 'Todas (1+ cuotas atrasadas)';
+    }
+  };
 
   // Calcular clientes deudores
   const getDelinquentClients = (): DelinquentClient[] => {
@@ -82,7 +101,12 @@ export default function DelinquentClientsReport() {
           totalOverdueAmount: overdueCuotas.reduce((sum, cuota) => sum + (cuota.total || cuota.monto), 0),
         };
       })
-      .filter((item) => item.overdueCuotasCount >= 2) // Solo 2 o más atrasadas
+      .filter((item) => item.overdueCuotasCount > 0)
+      .filter((item) => {
+        if (overdueCountFilter === 'all') return true;
+        if (overdueCountFilter === '4+') return item.overdueCuotasCount >= 4;
+        return item.overdueCuotasCount === parseInt(overdueCountFilter, 10);
+      })
       .sort((a, b) => b.overdueCuotasCount - a.overdueCuotasCount); // Ordenar por cantidad descendente
   };
 
@@ -103,7 +127,7 @@ export default function DelinquentClientsReport() {
 
       // Título
       pdf.setFontSize(16);
-      pdf.text('Reporte de Clientes Deudores (2+ Cuotas Atrasadas)', 14, 15);
+      pdf.text(`Reporte de Clientes Deudores (${getFilterLabel()})`, 14, 15);
 
       // Fecha de generación
       pdf.setFontSize(10);
@@ -120,6 +144,7 @@ export default function DelinquentClientsReport() {
         `${item.client.nombre1} ${item.client.nombre2 || ''}`.trim(),
         item.client.dni1,
         item.client.celular1 || '-',
+        item.client.email1 || '-',
         item.client.manzana,
         item.client.lote,
         item.overdueCuotasCount.toString(),
@@ -129,7 +154,7 @@ export default function DelinquentClientsReport() {
       const totalOverdueSum = delinquent.reduce((sum, item) => sum + item.totalOverdueAmount, 0);
 
       autoTable(pdf, {
-        head: [['Cliente', 'DNI', 'Celular', 'Manzana', 'Lote', 'Cuotas Atrasadas', 'Monto Total']],
+        head: [['Cliente', 'DNI', 'Celular', 'Email', 'Manzana', 'Lote', 'Cuotas Atrasadas', 'Monto Total']],
         body: tableData,
         startY: 28,
         headStyles: {
@@ -145,13 +170,14 @@ export default function DelinquentClientsReport() {
           fontSize: 10,
         },
         columnStyles: {
-          0: { cellWidth: 55, halign: 'left' },
-          1: { cellWidth: 30, halign: 'center' },
-          2: { cellWidth: 35, halign: 'center' },
-          3: { cellWidth: 20, halign: 'center' },
-          4: { cellWidth: 20, halign: 'center' },
-          5: { halign: 'center', cellWidth: 25 },
-          6: { halign: 'right', cellWidth: 35 },
+          0: { cellWidth: 45, halign: 'left' },
+          1: { cellWidth: 25, halign: 'center' },
+          2: { cellWidth: 30, halign: 'center' },
+          3: { cellWidth: 40, halign: 'left' },
+          4: { cellWidth: 15, halign: 'center' },
+          5: { cellWidth: 15, halign: 'center' },
+          6: { halign: 'center', cellWidth: 25 },
+          7: { halign: 'right', cellWidth: 35 },
         },
         margin: { top: 10, right: 10, bottom: 15, left: 10 },
         didDrawPage: (data) => {
@@ -184,12 +210,32 @@ export default function DelinquentClientsReport() {
 
   return (
     <Card>
-      <CardHeader className="flex flex-row items-center justify-between">
-        <CardTitle>Clientes Deudores (2+ Cuotas Atrasadas)</CardTitle>
-        <Button onClick={handleDownloadReport} className="gap-2" disabled={delinquent.length === 0}>
-          <Download className="w-4 h-4" />
-          Descargar Reporte
-        </Button>
+      <CardHeader className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <CardTitle>Clientes Deudores</CardTitle>
+          <p className="text-sm text-slate-500">{getFilterLabel()}</p>
+        </div>
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+          <div className="flex items-center gap-2 rounded-2xl border border-slate-200 bg-slate-50 px-3 py-2 shadow-sm">
+            <Label className="text-sm font-medium text-slate-600">Filtrar por cuotas atrasadas:</Label>
+            <Select value={overdueCountFilter} onValueChange={(value) => setOverdueCountFilter(value as 'all' | '1' | '2' | '3' | '4+')}>
+              <SelectTrigger className="w-[190px]">
+                <SelectValue placeholder="Seleccionar" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">Todas (1+ cuotas)</SelectItem>
+                <SelectItem value="1">Solo 1 cuota</SelectItem>
+                <SelectItem value="2">Solo 2 cuotas</SelectItem>
+                <SelectItem value="3">Solo 3 cuotas</SelectItem>
+                <SelectItem value="4+">4 o más cuotas</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+          <Button onClick={handleDownloadReport} className="gap-2" disabled={delinquent.length === 0}>
+            <Download className="w-4 h-4" />
+            Descargar Reporte
+          </Button>
+        </div>
       </CardHeader>
       <CardContent>
         {delinquent.length === 0 ? (
@@ -212,6 +258,7 @@ export default function DelinquentClientsReport() {
                     <TableHead>Manzana</TableHead>
                     <TableHead>Lote</TableHead>
                     <TableHead>Celular</TableHead>
+                    <TableHead>Email</TableHead>
                     <TableHead className="text-center">Cuotas Atrasadas</TableHead>
                     <TableHead className="text-right">Monto Total Atrasado</TableHead>
                   </TableRow>
@@ -226,6 +273,7 @@ export default function DelinquentClientsReport() {
                       <TableCell>{item.client.manzana}</TableCell>
                       <TableCell>{item.client.lote}</TableCell>
                       <TableCell>{item.client.celular1 || '-'}</TableCell>
+                      <TableCell>{item.client.email1 || '-'}</TableCell>
                       <TableCell className="text-center">
                         <Badge variant="destructive">{item.overdueCuotasCount}</Badge>
                       </TableCell>
