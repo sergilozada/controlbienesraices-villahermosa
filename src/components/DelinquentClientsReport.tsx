@@ -244,9 +244,12 @@ export default function DelinquentClientsReport() {
           </div>
         ) : (
           <div>
-            <div className="mb-4 p-4 bg-yellow-50 border border-yellow-200 rounded-lg">
+            <div className="mb-4 p-4 bg-yellow-50 border border-yellow-200 rounded-lg flex justify-between items-center">
               <p className="text-sm text-yellow-800">
                 Total de clientes deudores: <span className="font-semibold">{delinquent.length}</span>
+              </p>
+              <p className="text-sm text-yellow-800">
+                Total de deuda: <span className="font-semibold">S/ {delinquent.reduce((sum, item) => sum + item.totalOverdueAmount, 0).toFixed(2)}</span>
               </p>
             </div>
             <div className="w-full overflow-x-auto">
