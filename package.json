@@ -5,16 +5,12 @@
   "author": "Tu Nombre",
   "type": "module",
   "packageManager": "pnpm@8.10.0",
-  "main": "public/electron.js",
   "homepage": "./",
   "scripts": {
     "dev": "vite",
-    "dev:electron": "concurrently \"npm run dev\" \"wait-on http://localhost:5173 && electron .\"",
     "build": "vite build",
-    "build:electron": "npm run build && electron-builder",
     "lint": "eslint --quiet ./src",
-    "preview": "vite preview",
-    "electron": "electron ."
+    "preview": "vite preview"
   },
   "dependencies": {
     "@hookform/resolvers": "^3.9.0",
@@ -87,10 +83,6 @@
     "@types/react-dom": "^19.1.8",
     "@vitejs/plugin-react-swc": "^3.5.0",
     "autoprefixer": "^10.4.20",
-    "concurrently": "^8.2.2",
-    "electron": "^31.0.0",
-    "electron-builder": "^25.0.0",
-    "electron-is-dev": "^3.0.1",
     "eslint": "^9.9.0",
     "eslint-plugin-react-hooks": "^5.1.0-rc.0",
     "eslint-plugin-react-refresh": "^0.4.9",
@@ -100,39 +92,6 @@
     "tailwindcss": "^3.4.11",
     "typescript": "^5.5.3",
     "typescript-eslint": "^8.0.1",
-    "vite": "^5.4.1",
-    "wait-on": "^7.2.0"
-  },
-  "build": {
-    "appId": "com.controlbienesraices.app",
-    "productName": "Sistema de Bienes Raíces",
-    "files": [
-      "dist/**/*",
-      "public/electron.js",
-      "node_modules/**/*"
-    ],
-    "directories": {
-      "buildResources": "public"
-    },
-    "win": {
-      "target": [
-        {
-          "target": "portable",
-          "arch": [
-            "x64"
-          ]
-        }
-      ],
-      "certificateFile": null,
-      "certificatePassword": null,
-      "sign": false,
-      "verifyUpdateCodeSignature": false
-    },
-    "nsis": {
-      "oneClick": false,
-      "allowToChangeInstallationDirectory": true,
-      "createDesktopShortcut": true,
-      "createStartMenuShortcut": true
-    }
+    "vite": "^5.4.1"
   }
 }
