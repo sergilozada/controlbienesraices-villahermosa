@@ -11,6 +11,19 @@ import { toast } from 'sonner';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 
+type JsPDFWithAutoTable = jsPDF & {
+  lastAutoTable?: {
+    finalY: number;
+  };
+  internal: {
+    getNumberOfPages?: () => number;
+    pageSize: {
+      getHeight(): number;
+      getWidth(): number;
+    };
+  };
+};
+
 interface Client {
   id: string;
   nombre1: string;
@@ -123,7 +136,7 @@ export default function DelinquentClientsReport() {
         orientation: 'landscape',
         unit: 'mm',
         format: 'A4',
-      });
+      }) as JsPDFWithAutoTable;
 
       // Título
       pdf.setFontSize(16);
@@ -188,13 +201,13 @@ export default function DelinquentClientsReport() {
           pdf.text(`Total de clientes deudores: ${delinquent.length}`, 14, pageHeight - 10);
           
           // Número de página
-          const pageCount = (pdf as any).internal.getNumberOfPages?.() || 1;
+          const pageCount = pdf.internal.getNumberOfPages?.() || 1;
           const pageNumber = data.pageNumber || 1;
           pdf.text(`Página ${pageNumber} de ${pageCount}`, pageSize.getWidth() - 25, pageHeight - 10);
         },
       });
 
-      const finalY = (pdf as any).lastAutoTable?.finalY || 28;
+      const finalY = pdf.lastAutoTable?.finalY || 28;
       pdf.setFontSize(11);
       pdf.text(`Total general de deuda: S/ ${totalOverdueSum.toFixed(2)}`, 14, finalY + 10);
 
