@@ -39,7 +39,3 @@ https://github.com/sergilozada/control-bienesraices
 ## Objetivo del proyecto
 
 El objetivo de este sistema es facilitar la administración comercial y financiera de un proyecto inmobiliario, centralizando la información de clientes, lotes y pagos en una plataforma digital sencilla, rápida y organizada.
-
-## Autor
-
-Sergi Lozada
