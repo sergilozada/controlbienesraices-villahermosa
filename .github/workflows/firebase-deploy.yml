@@ -10,12 +10,14 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Setup Node.js
-        uses: actions/setup-node@v3
+        uses: actions/setup-node@v4
         with:
           node-version: '18'
+          cache: 'pnpm'
+          cache-dependency-path: 'pnpm-lock.yaml'
 
       - name: Install pnpm
         run: npm install -g pnpm
@@ -23,7 +25,20 @@ jobs:
       - name: Install dependencies
         run: pnpm install
 
-      - name: Build
+      - name: Build with Vite environment variables
+        env:
+          VITE_ADMIN_EMAIL: ${{ secrets.VITE_ADMIN_EMAIL }}
+          VITE_ADMIN_PASSWORD: ${{ secrets.VITE_ADMIN_PASSWORD }}
+          VITE_USUARIO_EMAIL: ${{ secrets.VITE_USUARIO_EMAIL }}
+          VITE_USUARIO_PASSWORD: ${{ secrets.VITE_USUARIO_PASSWORD }}
+          VITE_READONLY_EMAIL: ${{ secrets.VITE_READONLY_EMAIL }}
+          VITE_READONLY_PASSWORD: ${{ secrets.VITE_READONLY_PASSWORD }}
+          VITE_FIREBASE_API_KEY: ${{ secrets.VITE_FIREBASE_API_KEY }}
+          VITE_FIREBASE_AUTH_DOMAIN: ${{ secrets.VITE_FIREBASE_AUTH_DOMAIN }}
+          VITE_FIREBASE_PROJECT_ID: ${{ secrets.VITE_FIREBASE_PROJECT_ID }}
+          VITE_FIREBASE_STORAGE_BUCKET: ${{ secrets.VITE_FIREBASE_STORAGE_BUCKET }}
+          VITE_FIREBASE_MESSAGING_SENDER_ID: ${{ secrets.VITE_FIREBASE_MESSAGING_SENDER_ID }}
+          VITE_FIREBASE_APP_ID: ${{ secrets.VITE_FIREBASE_APP_ID }}
         run: pnpm run build
 
       - name: Install Firebase CLI
@@ -32,11 +47,4 @@ jobs:
       - name: Deploy to Firebase Hosting
         env:
           FIREBASE_TOKEN: ${{ secrets.FIREBASE_TOKEN }}
-          PROJECT_ID: ${{ secrets.FIREBASE_PROJECT_ID }}
-        run: |
-          # Use --project if you prefer overriding .firebaserc
-          if [ -n "$PROJECT_ID" ]; then
-            firebase deploy --only hosting --project "$PROJECT_ID" --token "$FIREBASE_TOKEN"
-          else
-            firebase deploy --only hosting --token "$FIREBASE_TOKEN"
-          fi
+        run: firebase deploy --only hosting --token "$FIREBASE_TOKEN"
