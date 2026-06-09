@@ -5,7 +5,7 @@
   "author": "Tu Nombre",
   "type": "module",
   "packageManager": "pnpm@8.10.0",
-  "homepage": "./",
+  "homepage": "http://./",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
@@ -93,5 +93,15 @@
     "typescript": "^5.5.3",
     "typescript-eslint": "^8.0.1",
     "vite": "^5.4.1"
+  },
+  "main": "eslint.config.js",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/sergilozada/control_bienesraices.git"
+  },
+  "keywords": [],
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/sergilozada/control_bienesraices/issues"
   }
 }
