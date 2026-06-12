@@ -10,7 +10,7 @@ import { Label } from '@/components/ui/label';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Edit, Trash2, Eye, Upload, Download, FileText } from 'lucide-react';
 import { toast } from 'sonner';
-import { storage } from '@/lib/firebase';
+import { storage } from '@/services/firebase';
 import { ref as storageRef, uploadBytes, getDownloadURL } from 'firebase/storage';
 import jsPDF from 'jspdf';
 import 'jspdf-autotable';

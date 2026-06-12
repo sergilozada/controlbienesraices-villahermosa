@@ -20,7 +20,7 @@ import {
   orderBy,
   Timestamp
 } from 'firebase/firestore';
-import { auth, db, storage } from '@/lib/firebase';
+import { auth, db, storage } from '@/services/firebase';
 import { ref as storageRef, listAll, deleteObject } from 'firebase/storage';
 
 interface User {
