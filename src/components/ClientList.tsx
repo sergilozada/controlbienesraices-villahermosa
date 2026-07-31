@@ -915,28 +915,10 @@ export default function ClientList({ filterType = 'all' }: ClientListProps) {
       const generatedAt = new Date().toLocaleString('es-PE');
       const money = (value: number) => `S/ ${Number(value || 0).toFixed(2)}`;
 
-      const rows = filteredClients.map((client, index) => {
-        const paymentTotals = getClientPaymentTotals(client);
-        return [
-          index + 1,
-          [client.nombre1, client.nombre2].filter(Boolean).join(' '),
-          [client.dni1, client.dni2].filter(Boolean).join(' / '),
-          [client.celular1, client.celular2].filter(Boolean).join(' / ') || '-',
-          [client.email1, client.email2].filter(Boolean).join(' / ') || '-',
-          client.manzana,
-          client.lote,
-          `${Number(client.metraje || 0).toFixed(2)} m2`,
-          money(client.montoTotal),
-          client.formaPago === 'contado' ? 'Contado' : 'Cuotas',
-          money(client.inicial || 0),
-          client.numeroCuotas || 0,
-          getClientStatus(client),
-          money(paymentTotals.totalPagado),
-          money(paymentTotals.totalPendiente)
-        ];
-      });
+      const financedClients = filteredClients.filter(client => client.formaPago === 'cuotas');
+      const cashClients = filteredClients.filter(client => client.formaPago === 'contado');
 
-      const totals = filteredClients.reduce((acc, client) => {
+      const calculateGroupTotals = (group: Client[]) => group.reduce((acc, client) => {
         const paymentTotals = getClientPaymentTotals(client);
         acc.montoTotal += Number(client.montoTotal || 0);
         acc.inicial += Number(client.inicial || 0);
@@ -944,6 +926,8 @@ export default function ClientList({ filterType = 'all' }: ClientListProps) {
         acc.pendiente += paymentTotals.totalPendiente;
         return acc;
       }, { montoTotal: 0, inicial: 0, pagado: 0, pendiente: 0 });
+
+      const totals = calculateGroupTotals(filteredClients);
 
       doc.setFont('helvetica', 'bold');
       doc.setFontSize(18);
@@ -954,31 +938,97 @@ export default function ClientList({ filterType = 'all' }: ClientListProps) {
       doc.setTextColor(80);
       doc.text(`Generado: ${generatedAt} | Total de clientes: ${filteredClients.length}`, 14, 23);
 
-      autoTable(doc, {
-        startY: 28,
-        head: [[
-          'N°', 'Nombres', 'DNIs', 'Celulares', 'Emails', 'Mz.', 'Lote', 'Metraje',
-          'Monto total', 'Forma de pago', 'Inicial', 'Cuotas', 'Estado',
-          'Total pagado (incl. inicial)', 'Monto pendiente'
-        ]],
-        body: rows,
-        theme: 'grid',
-        styles: { fontSize: 5.5, cellPadding: 1.25, overflow: 'linebreak', valign: 'middle' },
-        headStyles: { fillColor: [30, 64, 175], textColor: 255, fontStyle: 'bold' },
-        alternateRowStyles: { fillColor: [241, 245, 249] },
-        margin: { top: 14, right: 10, bottom: 16, left: 10 },
-        didDrawPage: () => {
+      const renderClientGroup = (
+        title: string,
+        group: Client[],
+        color: [number, number, number],
+        addPage: boolean
+      ) => {
+        if (addPage) doc.addPage();
+
+        const startY = addPage ? 18 : 34;
+        doc.setFont('helvetica', 'bold');
+        doc.setFontSize(13);
+        doc.setTextColor(...color);
+        doc.text(`${title} (${group.length})`, 10, startY - 5);
+
+        const rows = group.map((client, index) => {
+          const paymentTotals = getClientPaymentTotals(client);
+          return [
+            index + 1,
+            [client.nombre1, client.nombre2].filter(Boolean).join(' '),
+            [client.dni1, client.dni2].filter(Boolean).join(' / '),
+            [client.celular1, client.celular2].filter(Boolean).join(' / ') || '-',
+            [client.email1, client.email2].filter(Boolean).join(' / ') || '-',
+            client.manzana,
+            client.lote,
+            `${Number(client.metraje || 0).toFixed(2)} m2`,
+            money(client.montoTotal),
+            money(client.inicial || 0),
+            client.numeroCuotas || 0,
+            getClientStatus(client),
+            money(paymentTotals.totalPagado),
+            money(paymentTotals.totalPendiente)
+          ];
+        });
+
+        autoTable(doc, {
+          startY,
+          head: [[
+            'N°', 'Nombres', 'DNIs', 'Celulares', 'Emails', 'Mz.', 'Lote', 'Metraje',
+            'Monto total', 'Inicial', 'Cuotas', 'Estado',
+            'Total pagado (incl. inicial)', 'Monto pendiente'
+          ]],
+          body: rows,
+          theme: 'grid',
+          styles: { fontSize: 5.5, cellPadding: 1.25, overflow: 'linebreak', valign: 'middle' },
+          headStyles: { fillColor: color, textColor: 255, fontStyle: 'bold' },
+          alternateRowStyles: { fillColor: [241, 245, 249] },
+          margin: { top: 14, right: 10, bottom: 16, left: 10 },
+          didDrawPage: () => {
           const pageNumber = doc.getNumberOfPages();
           const pageWidth = doc.internal.pageSize.getWidth();
           const pageHeight = doc.internal.pageSize.getHeight();
           doc.setFontSize(7);
           doc.setTextColor(100);
           doc.text(`Página ${pageNumber}`, pageWidth - 10, pageHeight - 7, { align: 'right' });
-        }
-      });
+          }
+        });
+
+        const groupTotals = calculateGroupTotals(group);
+        autoTable(doc, {
+          startY: (doc.lastAutoTable?.finalY || startY) + 5,
+          body: [[
+            `Subtotal ${title}`,
+            `${group.length} clientes`,
+            `Contratos: ${money(groupTotals.montoTotal)}`,
+            `Pagado: ${money(groupTotals.pagado)}`,
+            `Pendiente: ${money(groupTotals.pendiente)}`
+          ]],
+          theme: 'grid',
+          styles: { fontSize: 8, cellPadding: 2, fontStyle: 'bold' },
+          bodyStyles: { fillColor: [248, 250, 252], textColor: color },
+          margin: { left: 10, right: 10, bottom: 16 }
+        });
+      };
+
+      if (financedClients.length > 0) {
+        renderClientGroup('CLIENTES FINANCIADOS', financedClients, [30, 64, 175], false);
+      }
+      if (cashClients.length > 0) {
+        renderClientGroup('CLIENTES AL CONTADO', cashClients, [5, 150, 105], financedClients.length > 0);
+      }
+
+      doc.addPage();
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(15);
+      doc.setTextColor(22, 101, 52);
+      doc.text('RESUMEN GENERAL', 10, 18);
 
       const summaryRows = [
         ['Total de clientes', String(filteredClients.length)],
+        ['Clientes financiados', String(financedClients.length)],
+        ['Clientes al contado', String(cashClients.length)],
         ['Valor total de contratos', money(totals.montoTotal)],
         ['Total de iniciales registradas', money(totals.inicial)],
         ['TOTAL PAGADO POR TODOS LOS CLIENTES', money(totals.pagado)],
@@ -986,7 +1036,7 @@ export default function ClientList({ filterType = 'all' }: ClientListProps) {
       ];
 
       autoTable(doc, {
-        startY: (doc.lastAutoTable?.finalY || 28) + 8,
+        startY: 24,
         head: [['RESUMEN GENERAL', 'IMPORTE']],
         body: summaryRows,
         theme: 'grid',
@@ -995,10 +1045,17 @@ export default function ClientList({ filterType = 'all' }: ClientListProps) {
         headStyles: { fillColor: [22, 101, 52], textColor: 255, fontStyle: 'bold' },
         columnStyles: { 0: { fontStyle: 'bold' }, 1: { halign: 'right' } },
         didParseCell: (data: any) => {
-          if (data.section === 'body' && data.row.index >= 3) {
-            data.cell.styles.fillColor = data.row.index === 3 ? [220, 252, 231] : [254, 226, 226];
+          if (data.section === 'body' && data.row.index >= 5) {
+            data.cell.styles.fillColor = data.row.index === 5 ? [220, 252, 231] : [254, 226, 226];
             data.cell.styles.fontStyle = 'bold';
           }
+        },
+        didDrawPage: () => {
+          const pageWidth = doc.internal.pageSize.getWidth();
+          const pageHeight = doc.internal.pageSize.getHeight();
+          doc.setFontSize(7);
+          doc.setTextColor(100);
+          doc.text(`Página ${doc.getNumberOfPages()}`, pageWidth - 10, pageHeight - 7, { align: 'right' });
         }
       });
 
