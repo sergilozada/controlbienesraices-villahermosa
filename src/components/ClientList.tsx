@@ -13,7 +13,7 @@ import { toast } from 'sonner';
 import { storage } from '@/services/firebase';
 import { ref as storageRef, uploadBytes, getDownloadURL } from 'firebase/storage';
 import jsPDF from 'jspdf';
-import 'jspdf-autotable';
+import autoTable from 'jspdf-autotable';
 
 interface ClientListProps {
   filterType?: 'pending' | 'overdue' | 'all';
@@ -877,15 +877,150 @@ export default function ClientList({ filterType = 'all' }: ClientListProps) {
     })();
   };
 
+  const getClientPaymentTotals = (client: Client) => {
+    // Las ventas al contado representan pagos completos, aunque no tengan cronograma.
+    if (client.formaPago === 'contado') {
+      return {
+        totalPagado: Number(client.montoTotal || 0),
+        totalPendiente: 0
+      };
+    }
+
+    return (client.cuotas || []).reduce((totals, cuota) => {
+      const mora = cuota.numero === 0
+        ? 0
+        : ((typeof cuota.mora === 'number' && cuota.manualMora === true)
+          ? cuota.mora
+          : calculateMora(cuota.vencimiento, cuota.monto));
+      const importe = Number(cuota.monto || 0) + Number(mora || 0);
+
+      if (cuota.estado === 'pagado') {
+        totals.totalPagado += importe;
+      } else {
+        totals.totalPendiente += importe;
+      }
+
+      return totals;
+    }, { totalPagado: 0, totalPendiente: 0 });
+  };
+
+  const exportClientsToPDF = () => {
+    if (filteredClients.length === 0) {
+      toast.error('No hay clientes para descargar.');
+      return;
+    }
+
+    try {
+      const doc = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a3' });
+      const generatedAt = new Date().toLocaleString('es-PE');
+      const money = (value: number) => `S/ ${Number(value || 0).toFixed(2)}`;
+
+      const rows = filteredClients.map((client, index) => {
+        const paymentTotals = getClientPaymentTotals(client);
+        return [
+          index + 1,
+          [client.nombre1, client.nombre2].filter(Boolean).join(' '),
+          [client.dni1, client.dni2].filter(Boolean).join(' / '),
+          [client.celular1, client.celular2].filter(Boolean).join(' / ') || '-',
+          [client.email1, client.email2].filter(Boolean).join(' / ') || '-',
+          client.manzana,
+          client.lote,
+          `${Number(client.metraje || 0).toFixed(2)} m2`,
+          money(client.montoTotal),
+          client.formaPago === 'contado' ? 'Contado' : 'Cuotas',
+          money(client.inicial || 0),
+          client.numeroCuotas || 0,
+          getClientStatus(client),
+          money(paymentTotals.totalPagado),
+          money(paymentTotals.totalPendiente)
+        ];
+      });
+
+      const totals = filteredClients.reduce((acc, client) => {
+        const paymentTotals = getClientPaymentTotals(client);
+        acc.montoTotal += Number(client.montoTotal || 0);
+        acc.inicial += Number(client.inicial || 0);
+        acc.pagado += paymentTotals.totalPagado;
+        acc.pendiente += paymentTotals.totalPendiente;
+        return acc;
+      }, { montoTotal: 0, inicial: 0, pagado: 0, pendiente: 0 });
+
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(18);
+      doc.setTextColor(30, 64, 175);
+      doc.text('REPORTE GENERAL DE CLIENTES', 14, 16);
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(9);
+      doc.setTextColor(80);
+      doc.text(`Generado: ${generatedAt} | Total de clientes: ${filteredClients.length}`, 14, 23);
+
+      autoTable(doc, {
+        startY: 28,
+        head: [[
+          'N°', 'Nombres', 'DNIs', 'Celulares', 'Emails', 'Mz.', 'Lote', 'Metraje',
+          'Monto total', 'Forma de pago', 'Inicial', 'Cuotas', 'Estado',
+          'Total pagado (incl. inicial)', 'Monto pendiente'
+        ]],
+        body: rows,
+        theme: 'grid',
+        styles: { fontSize: 5.5, cellPadding: 1.25, overflow: 'linebreak', valign: 'middle' },
+        headStyles: { fillColor: [30, 64, 175], textColor: 255, fontStyle: 'bold' },
+        alternateRowStyles: { fillColor: [241, 245, 249] },
+        margin: { top: 14, right: 10, bottom: 16, left: 10 },
+        didDrawPage: () => {
+          const pageNumber = doc.getNumberOfPages();
+          const pageWidth = doc.internal.pageSize.getWidth();
+          const pageHeight = doc.internal.pageSize.getHeight();
+          doc.setFontSize(7);
+          doc.setTextColor(100);
+          doc.text(`Página ${pageNumber}`, pageWidth - 10, pageHeight - 7, { align: 'right' });
+        }
+      });
+
+      const summaryRows = [
+        ['Total de clientes', String(filteredClients.length)],
+        ['Valor total de contratos', money(totals.montoTotal)],
+        ['Total de iniciales registradas', money(totals.inicial)],
+        ['TOTAL PAGADO POR TODOS LOS CLIENTES', money(totals.pagado)],
+        ['TOTAL PENDIENTE DE TODOS LOS CLIENTES', money(totals.pendiente)]
+      ];
+
+      autoTable(doc, {
+        startY: (doc.lastAutoTable?.finalY || 28) + 8,
+        head: [['RESUMEN GENERAL', 'IMPORTE']],
+        body: summaryRows,
+        theme: 'grid',
+        margin: { left: 10, bottom: 16 },
+        styles: { fontSize: 9, cellPadding: 2.5 },
+        headStyles: { fillColor: [22, 101, 52], textColor: 255, fontStyle: 'bold' },
+        columnStyles: { 0: { fontStyle: 'bold' }, 1: { halign: 'right' } },
+        didParseCell: (data: any) => {
+          if (data.section === 'body' && data.row.index >= 3) {
+            data.cell.styles.fillColor = data.row.index === 3 ? [220, 252, 231] : [254, 226, 226];
+            data.cell.styles.fontStyle = 'bold';
+          }
+        }
+      });
+
+      doc.save(`reporte_clientes_${new Date().toISOString().slice(0, 10)}.pdf`);
+      toast.success('Reporte de clientes descargado en PDF.');
+    } catch (error) {
+      console.error('Error generando reporte general de clientes:', error);
+      toast.error('No se pudo generar el reporte PDF de clientes.');
+    }
+  };
+
   const filteredClients = getFilteredClients();
 
   return (
     <div className="space-y-6 w-full">
       <Card>
-        <CardHeader>
-          <CardTitle>
-            Total de clientes: {filteredClients.length}
-          </CardTitle>
+        <CardHeader className="flex flex-row items-center justify-between gap-4">
+          <CardTitle>Total de clientes: {filteredClients.length}</CardTitle>
+          <Button onClick={exportClientsToPDF} disabled={filteredClients.length === 0}>
+            <Download className="w-4 h-4 mr-2" />
+            Descargar clientes PDF
+          </Button>
         </CardHeader>
         <CardContent>
           {filterType === 'overdue' && (
