@@ -921,11 +921,10 @@ export default function ClientList({ filterType = 'all' }: ClientListProps) {
       const calculateGroupTotals = (group: Client[]) => group.reduce((acc, client) => {
         const paymentTotals = getClientPaymentTotals(client);
         acc.montoTotal += Number(client.montoTotal || 0);
-        acc.inicial += Number(client.inicial || 0);
         acc.pagado += paymentTotals.totalPagado;
         acc.pendiente += paymentTotals.totalPendiente;
         return acc;
-      }, { montoTotal: 0, inicial: 0, pagado: 0, pendiente: 0 });
+      }, { montoTotal: 0, pagado: 0, pendiente: 0 });
 
       const totals = calculateGroupTotals(filteredClients);
 
@@ -964,9 +963,7 @@ export default function ClientList({ filterType = 'all' }: ClientListProps) {
             client.lote,
             `${Number(client.metraje || 0).toFixed(2)} m2`,
             money(client.montoTotal),
-            money(client.inicial || 0),
             client.numeroCuotas || 0,
-            getClientStatus(client),
             money(paymentTotals.totalPagado),
             money(paymentTotals.totalPendiente)
           ];
@@ -976,7 +973,7 @@ export default function ClientList({ filterType = 'all' }: ClientListProps) {
           startY,
           head: [[
             'N°', 'Nombres', 'DNIs', 'Celulares', 'Emails', 'Mz.', 'Lote', 'Metraje',
-            'Monto total', 'Inicial', 'Cuotas', 'Estado',
+            'Monto total', 'Cuotas',
             'Total pagado (incl. inicial)', 'Monto pendiente'
           ]],
           body: rows,
@@ -1030,7 +1027,6 @@ export default function ClientList({ filterType = 'all' }: ClientListProps) {
         ['Clientes financiados', String(financedClients.length)],
         ['Clientes al contado', String(cashClients.length)],
         ['Valor total de contratos', money(totals.montoTotal)],
-        ['Total de iniciales registradas', money(totals.inicial)],
         ['TOTAL PAGADO POR TODOS LOS CLIENTES', money(totals.pagado)],
         ['TOTAL PENDIENTE DE TODOS LOS CLIENTES', money(totals.pendiente)]
       ];
@@ -1045,8 +1041,8 @@ export default function ClientList({ filterType = 'all' }: ClientListProps) {
         headStyles: { fillColor: [22, 101, 52], textColor: 255, fontStyle: 'bold' },
         columnStyles: { 0: { fontStyle: 'bold' }, 1: { halign: 'right' } },
         didParseCell: (data: any) => {
-          if (data.section === 'body' && data.row.index >= 5) {
-            data.cell.styles.fillColor = data.row.index === 5 ? [220, 252, 231] : [254, 226, 226];
+          if (data.section === 'body' && data.row.index >= 4) {
+            data.cell.styles.fillColor = data.row.index === 4 ? [220, 252, 231] : [254, 226, 226];
             data.cell.styles.fontStyle = 'bold';
           }
         },
