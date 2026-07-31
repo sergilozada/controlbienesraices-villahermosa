@@ -911,7 +911,8 @@ export default function ClientList({ filterType = 'all' }: ClientListProps) {
     }
 
     try {
-      const doc = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a3' });
+      // Generar directamente en A4 horizontal para evitar que la impresora reduzca un A3.
+      const doc = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' });
       const generatedAt = new Date().toLocaleString('es-PE');
       const money = (value: number) => `S/ ${Number(value || 0).toFixed(2)}`;
 
@@ -978,7 +979,7 @@ export default function ClientList({ filterType = 'all' }: ClientListProps) {
           ]],
           body: rows,
           theme: 'grid',
-          styles: { fontSize: 5.5, cellPadding: 1.25, overflow: 'linebreak', valign: 'middle' },
+          styles: { fontSize: 6.5, cellPadding: 1.4, overflow: 'linebreak', valign: 'middle' },
           headStyles: { fillColor: color, textColor: 255, fontStyle: 'bold' },
           alternateRowStyles: { fillColor: [241, 245, 249] },
           margin: { top: 14, right: 10, bottom: 16, left: 10 },
