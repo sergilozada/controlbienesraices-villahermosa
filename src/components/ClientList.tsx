@@ -71,6 +71,9 @@ export default function ClientList({ filterType = 'all' }: ClientListProps) {
   const [editingPhoneClientId, setEditingPhoneClientId] = useState<string | null>(null);
   const [editCelular1, setEditCelular1] = useState('');
   const [editCelular2, setEditCelular2] = useState('');
+  const [editingEmailClientId, setEditingEmailClientId] = useState<string | null>(null);
+  const [editEmail1, setEditEmail1] = useState('');
+  const [editEmail2, setEditEmail2] = useState('');
 
   const startPhoneEdit = (client: Client) => {
     setEditingPhoneClientId(client.id);
@@ -98,6 +101,36 @@ export default function ClientList({ filterType = 'all' }: ClientListProps) {
     } catch (err) {
       console.error('Error actualizando teléfonos:', err);
       toast.error('No se pudo actualizar los teléfonos');
+    }
+  };
+
+  const startEmailEdit = (client: Client) => {
+    setEditingEmailClientId(client.id);
+    setEditEmail1(client.email1 || '');
+    setEditEmail2(client.email2 || '');
+  };
+
+  const cancelEmailEdit = () => {
+    setEditingEmailClientId(null);
+    setEditEmail1('');
+    setEditEmail2('');
+  };
+
+  const saveEmailEdit = async () => {
+    if (!editingEmailClientId) return;
+
+    const payload: Partial<Client> = {
+      email1: editEmail1.trim(),
+      email2: editEmail2.trim()
+    };
+
+    try {
+      await updateClient(editingEmailClientId, payload);
+      toast.success('Correos actualizados correctamente');
+      cancelEmailEdit();
+    } catch (err) {
+      console.error('Error actualizando correos:', err);
+      toast.error('No se pudo actualizar los correos');
     }
   };
 
@@ -1166,7 +1199,50 @@ export default function ClientList({ filterType = 'all' }: ClientListProps) {
                         </div>
                       )}
                     </TableCell>
-                    <TableCell>{client.email1} {client.email2}</TableCell>
+                    <TableCell>
+                      {editingEmailClientId === client.id ? (
+                        <div className="space-y-2">
+                          <Input
+                            type="email"
+                            value={editEmail1}
+                            onChange={(e) => setEditEmail1(e.target.value)}
+                            placeholder="Correo 1"
+                            className="w-full"
+                          />
+                          <Input
+                            type="email"
+                            value={editEmail2}
+                            onChange={(e) => setEditEmail2(e.target.value)}
+                            placeholder="Correo 2"
+                            className="w-full"
+                          />
+                          <div className="flex gap-2">
+                            <Button size="sm" onClick={saveEmailEdit}>
+                              Guardar
+                            </Button>
+                            <Button size="sm" variant="outline" onClick={cancelEmailEdit}>
+                              Cancelar
+                            </Button>
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="flex items-center gap-2">
+                          <div className="flex flex-col text-sm">
+                            <span>{client.email1 || '-'}</span>
+                            <span className="text-xs text-slate-500">{client.email2 || ''}</span>
+                          </div>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            aria-label="Editar correos"
+                            title="Editar correos"
+                            onClick={() => startEmailEdit(client)}
+                          >
+                            <Edit className="w-4 h-4" />
+                          </Button>
+                        </div>
+                      )}
+                    </TableCell>
                     <TableCell>{client.manzana}</TableCell>
                     <TableCell>{client.lote}</TableCell>
                     <TableCell>{client.metraje} m²</TableCell>
