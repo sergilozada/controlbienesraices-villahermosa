@@ -22,6 +22,7 @@ import {
 } from 'firebase/firestore';
 import { auth, db, storage } from '@/services/firebase';
 import { ref as storageRef, listAll, deleteObject } from 'firebase/storage';
+import { CURRENT_PAYMENT_SCHEDULE_VERSION } from '@/config/paymentSchedule';
 
 interface User {
   id: string;
@@ -48,6 +49,7 @@ interface Client {
   inicial?: number;
   numeroCuotas?: number;
   fechaRegistro: string;
+  versionCronograma?: string;
   cuotas?: Cuota[];
   userId: string; // Para asociar con el usuario
 }
@@ -98,6 +100,8 @@ export const useAuth = () => {
   }
   return context;
 };
+
+export const useOptionalAuth = () => useContext(AuthContext);
 
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [user, setUser] = useState<User | null>(null);
@@ -230,6 +234,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         ...clientData,
         userId: firebaseUser.uid,
         fechaRegistro: new Date().toISOString().split('T')[0],
+        versionCronograma: CURRENT_PAYMENT_SCHEDULE_VERSION,
         cuotas: []
       };
 

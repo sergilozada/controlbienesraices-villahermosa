@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { useAuth } from '@/context/FirebaseAuthContext';
+import useAnyAuth from '@/context/useAnyAuth';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
@@ -14,6 +14,7 @@ import { storage } from '@/services/firebase';
 import { ref as storageRef, uploadBytes, getDownloadURL } from 'firebase/storage';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
+import { CURRENT_PAYMENT_SCHEDULE_VERSION } from '@/config/paymentSchedule';
 
 interface ClientListProps {
   filterType?: 'pending' | 'overdue' | 'all';
@@ -37,6 +38,7 @@ interface Client {
   inicial?: number;
   numeroCuotas?: number;
   fechaRegistro: string;
+  versionCronograma?: string;
   cuotas?: Cuota[];
 }
 
@@ -55,8 +57,49 @@ interface Cuota {
   boleta?: string | string[] | { url: string; name?: string } | Array<{ url: string; name?: string }>;
 }
 
+interface PaymentScheduleConfig {
+  logoLayout: 'legacy-wide' | 'paired-square';
+  logoUrls: string[];
+  cobranzaPhone: string;
+  projectName: string;
+  bankLines: string[];
+}
+
+const LEGACY_PAYMENT_SCHEDULE: PaymentScheduleConfig = {
+  logoLayout: 'legacy-wide',
+  logoUrls: ['/logo.jpeg'],
+  cobranzaPhone: '942252720',
+  projectName: 'VILLA HERMOSA DE CARHUAZ',
+  bankLines: [
+    'N° DE CUENTA BCP',
+    'Soles: 38006500681006',
+    'CCI: 002-3801-0650-0681-00645',
+    'SEGUNDO TEOFILO LOZADA VILLEGAS'
+  ]
+};
+
+const CURRENT_PAYMENT_SCHEDULE: PaymentScheduleConfig = {
+  logoLayout: 'paired-square',
+  logoUrls: ['/logo-ayt-house.jpeg', '/logo-condominio-villa-hermosa.jpeg'],
+  cobranzaPhone: '929 074 799',
+  projectName: 'Condominio Villa Hermosa',
+  bankLines: [
+    'N.° DE CUENTA INTERBANK',
+    '4003008478638',
+    'CCI',
+    '00340000300847863890',
+    'EMPRESA INMOBILIARIA A&T HOUSE SAC'
+  ]
+};
+
+const getPaymentScheduleConfig = (client: Client): PaymentScheduleConfig => (
+  client.versionCronograma === CURRENT_PAYMENT_SCHEDULE_VERSION
+    ? CURRENT_PAYMENT_SCHEDULE
+    : LEGACY_PAYMENT_SCHEDULE
+);
+
 export default function ClientList({ filterType = 'all' }: ClientListProps) {
-  const { clients, deleteClient, updateClient, updateCuota, calculateMora, markCuotaAsPaid, updateCuotaAmount, updateCuotaDates, selectedClientId, setSelectedClientId, formatLocalISO, parseLocalDate } = useAuth();
+  const { clients, deleteClient, updateClient, updateCuota, calculateMora, markCuotaAsPaid, updateCuotaAmount, updateCuotaDates, selectedClientId, setSelectedClientId, formatLocalISO, parseLocalDate } = useAnyAuth();
   const [selectedClient, setSelectedClient] = useState<string | null>(selectedClientId || null);
   const [editingCuota, setEditingCuota] = useState<{ clientId: string; type: 'amount' | 'date'; cuotaIndex?: number } | null>(null);
   const [editMonto, setEditMonto] = useState('');
@@ -133,11 +176,6 @@ export default function ClientList({ filterType = 'all' }: ClientListProps) {
       toast.error('No se pudo actualizar los correos');
     }
   };
-
-  // Información bancaria reutilizable (evitar inconsistencias)
-  const bankAccountSoles = '38006500681006';
-  const bankCCI = '002-3801-0650-0681-00645';
-  const bankOwner = 'SEGUNDO TEOFILO LOZADA VILLEGAS';
 
   const getFilteredClients = () => {
     const today = new Date();
@@ -491,6 +529,7 @@ export default function ClientList({ filterType = 'all' }: ClientListProps) {
     (async () => {
       const doc = new jsPDF('p', 'mm', 'a4');
       const pageWidth = 210;
+      const scheduleConfig = getPaymentScheduleConfig(client);
       // Try to fetch logo and embed as base64
       const fetchImageAsDataURL = async (url: string) => {
         try {
@@ -508,22 +547,41 @@ export default function ClientList({ filterType = 'all' }: ClientListProps) {
         }
       };
 
-      let logoData: string | null = null;
+      let logoData: Array<string | null> = [];
       try {
-        logoData = await fetchImageAsDataURL('/logo.jpeg');
+        logoData = await Promise.all(scheduleConfig.logoUrls.map(fetchImageAsDataURL));
       } catch (err) {
-        console.error('Error fetching logo:', err);
-        logoData = null;
+        console.error('Error fetching schedule logos:', err);
+        logoData = scheduleConfig.logoUrls.map(() => null);
       }
 
-      // Header: logo full width if available (wrapped to avoid throwing)
+      // The legacy layout remains untouched for existing clients. New clients
+      // receive A&T first (left), followed by Condominio Villa Hermosa (right).
       let titleY = 20;
-      if (logoData) {
+      if (scheduleConfig.logoLayout === 'paired-square') {
+        const logoSize = 46;
+        const logoTop = 5;
+        const logoSideMargin = 5;
+        const logoPositions = [
+          logoSideMargin,
+          pageWidth - logoSideMargin - logoSize
+        ];
+
+        logoData.forEach((imageData, index) => {
+          if (!imageData) return;
+          try {
+            doc.addImage(imageData, 'JPEG', logoPositions[index], logoTop, logoSize, logoSize);
+          } catch (err) {
+            console.error(`Error adding schedule logo ${index + 1} to PDF:`, err);
+          }
+        });
+        titleY = logoTop + logoSize + 6;
+      } else if (logoData[0]) {
         try {
-          const imgProps = doc.getImageProperties(logoData);
+          const imgProps = doc.getImageProperties(logoData[0]);
           const imgW = pageWidth - 20; // 10mm margin each side
           const imgH = (imgProps.height * imgW) / imgProps.width;
-          doc.addImage(logoData, 'JPEG', 10, 6, imgW, imgH);
+          doc.addImage(logoData[0], 'JPEG', 10, 6, imgW, imgH);
           titleY = 6 + imgH + 6;
         } catch (err) {
           console.error('Error adding logo to PDF:', err);
@@ -538,11 +596,10 @@ export default function ClientList({ filterType = 'all' }: ClientListProps) {
       // Contact bar under title
       const contactY = titleY + 6;
       doc.setFontSize(10);
-      const cobranzaPhone = '942252720';
       doc.setFillColor(255, 205, 0);
       doc.rect(20, contactY - 4, pageWidth - 40, 6, 'F');
       doc.setTextColor(0);
-      doc.text(`Telefono de cobranza Villa Hermosa: ${cobranzaPhone}`, 25, contactY);
+      doc.text(`Telefono de cobranza Villa Hermosa: ${scheduleConfig.cobranzaPhone}`, 25, contactY);
 
   // Client info block (left) and bank info block (right)
       const infoStartY = contactY + 8;
@@ -561,7 +618,7 @@ export default function ClientList({ filterType = 'all' }: ClientListProps) {
   if (client.email2) { doc.text(`Gmail: ${client.email2}`, leftX, yInfo); yInfo += infoLineHeight; }
     doc.text(`Precio total: S/ ${client.montoTotal.toFixed(2)}`, leftX, yInfo); yInfo += infoLineHeight;
     doc.text(`Moneda: SOLES`, leftX, yInfo); yInfo += infoLineHeight;
-    doc.text(`Proyecto: VILLA HERMOSA DE CARHUAZ`, leftX, yInfo); yInfo += infoLineHeight;
+    doc.text(`Proyecto: ${scheduleConfig.projectName}`, leftX, yInfo); yInfo += infoLineHeight;
     doc.text(`Manzana: ${client.manzana}`, leftX, yInfo); yInfo += infoLineHeight;
     doc.text(`Lote: ${client.lote}`, leftX, yInfo); yInfo += infoLineHeight;
     doc.text(`Metraje: ${client.metraje} m2`, leftX, yInfo); yInfo += infoLineHeight;
@@ -576,12 +633,7 @@ export default function ClientList({ filterType = 'all' }: ClientListProps) {
   const bankY = infoStartY + (infoLineHeight * 4) + 2; // moved a bit up
     doc.setFontSize(9);
     doc.setTextColor(0);
-    const bankLines = [
-      'N° DE CUENTA BCP',
-      `Soles: ${bankAccountSoles}`,
-      `CCI: ${bankCCI}`,
-      bankOwner
-    ];
+    const bankLines = scheduleConfig.bankLines;
     // measure text width and height to draw a tight green box
     let maxBankTextWidth = 0;
     bankLines.forEach(l => {
@@ -603,11 +655,12 @@ export default function ClientList({ filterType = 'all' }: ClientListProps) {
     doc.rect(boxX, bankY - 2, boxWidth, boxHeight, 'F');
     // draw bank lines inside box
     let yBank = bankY + bankPad;
-    doc.text(bankLines[0], boxX + bankPad, yBank); yBank += infoLineHeight;
-    doc.text(bankLines[1], boxX + bankPad, yBank); yBank += infoLineHeight;
-    doc.text(bankLines[2], boxX + bankPad, yBank); yBank += infoLineHeight;
-    doc.setFont(undefined, 'bold');
-    doc.text(bankLines[3], boxX + bankPad, yBank); doc.setFont(undefined, 'normal');
+    bankLines.forEach((line, index) => {
+      doc.setFont(undefined, index === bankLines.length - 1 ? 'bold' : 'normal');
+      doc.text(line, boxX + bankPad, yBank);
+      yBank += infoLineHeight;
+    });
+    doc.setFont(undefined, 'normal');
 
   // Table header start Y (leave ample space so nothing se solape)
   const tableStartY = bankY + boxHeight + 12;
@@ -742,7 +795,7 @@ export default function ClientList({ filterType = 'all' }: ClientListProps) {
         // Draw totals
         doc.setFillColor(220, 240, 220);
         // NOTE: draw the green box exactly around the note text (with padding)
-        const noteText = `NOTA: UNA VEZ CANCELADO LA CUOTA MENSUAL, ENVIAR FOTO DEL VOUCHER AL NUMERO DE COBRANZA: ${cobranzaPhone}`;
+        const noteText = `NOTA: UNA VEZ CANCELADO LA CUOTA MENSUAL, ENVIAR FOTO DEL VOUCHER AL NUMERO DE COBRANZA: ${scheduleConfig.cobranzaPhone}`;
         const noteFontSize = 8; // smaller font to ensure fit
         doc.setFontSize(noteFontSize);
         // split note into lines that fit inside the content width
@@ -778,6 +831,7 @@ export default function ClientList({ filterType = 'all' }: ClientListProps) {
 
   const exportToExcel = (client: Client) => {
     (async () => {
+      const scheduleConfig = getPaymentScheduleConfig(client);
       // Try to fetch logo as base64 to embed in the HTML
       const fetchImageAsDataURL = async (url: string) => {
         try {
@@ -795,15 +849,27 @@ export default function ClientList({ filterType = 'all' }: ClientListProps) {
         }
       };
 
-      const logoData = await fetchImageAsDataURL('/logo.jpeg');
+      const logoData = await Promise.all(scheduleConfig.logoUrls.map(fetchImageAsDataURL));
 
-      const cobranzaPhone = '942252720';
       const rows: string[] = [];
       // Header with logo + title
       let headerHtml = '<div style="text-align:center;">';
-      if (logoData) headerHtml += `<img src="${logoData}" style="width:100%;height:auto;"/>`;
+      if (scheduleConfig.logoLayout === 'paired-square') {
+        const leftLogo = logoData[0]
+          ? `<img src="${logoData[0]}" width="174" height="174" style="display:block;"/>`
+          : '';
+        const rightLogo = logoData[1]
+          ? `<img src="${logoData[1]}" width="174" height="174" style="display:block;margin-left:auto;"/>`
+          : '';
+        headerHtml += `<table role="presentation" style="width:100%;border-collapse:collapse;"><tr>
+          <td width="50%" align="left" style="padding-left:19px;">${leftLogo}</td>
+          <td width="50%" align="right" style="padding-right:19px;">${rightLogo}</td>
+        </tr></table>`;
+      } else if (logoData[0]) {
+        headerHtml += `<img src="${logoData[0]}" style="width:100%;height:auto;"/>`;
+      }
       headerHtml += `<h2>CRONOGRAMA DE PAGOS</h2>`;
-      headerHtml += `<div style="background:#ffd700;padding:4px;margin-bottom:6px;">Telefono de cobranza Villa Hermosa: ${cobranzaPhone}</div>`;
+      headerHtml += `<div style="background:#ffd700;padding:4px;margin-bottom:6px;">Telefono de cobranza Villa Hermosa: ${scheduleConfig.cobranzaPhone}</div>`;
       headerHtml += '</div>';
 
       // Client and bank info with separate columns for names, DNIs, phones, emails
@@ -821,20 +887,23 @@ export default function ClientList({ filterType = 'all' }: ClientListProps) {
   if (client.email2) infoHtml += `<tr><td><strong>Gmail 2</strong></td><td>${client.email2}</td></tr>`;
       infoHtml += `<tr><td><strong>Precio total</strong></td><td>S/ ${client.montoTotal.toFixed(2)}</td></tr>`;
       infoHtml += `<tr><td><strong>Moneda</strong></td><td>SOLES</td></tr>`;
-      infoHtml += `<tr><td><strong>Proyecto</strong></td><td>VILLA HERMOSA DE CARHUAZ</td></tr>`;
+      infoHtml += `<tr><td><strong>Proyecto</strong></td><td>${scheduleConfig.projectName}</td></tr>`;
       infoHtml += `<tr><td><strong>Manzana</strong></td><td>${client.manzana}</td></tr>`;
       infoHtml += `<tr><td><strong>Lote</strong></td><td>${client.lote}</td></tr>`;
       infoHtml += `<tr><td><strong>Metraje</strong></td><td>${client.metraje} m2</td></tr>`;
       infoHtml += '</table>';
       infoHtml += '</td>';
       // make bank box an inline green block sized to content
+      const bankHtml = scheduleConfig.logoLayout === 'legacy-wide'
+        ? `<div style="font-size:12px;font-weight:600;">${scheduleConfig.bankLines[0]}</div>
+          <div>${scheduleConfig.bankLines[1]}</div>
+          <div>${scheduleConfig.bankLines[2]}</div>
+          <div style="margin-top:6px;font-weight:bold;">${scheduleConfig.bankLines[3]}</div>`
+        : scheduleConfig.bankLines.map((line, index) => (
+          `<div style="${index === scheduleConfig.bankLines.length - 1 ? 'margin-top:6px;font-weight:bold;' : ''}">${line}</div>`
+        )).join('');
       infoHtml += `<td style="vertical-align:top;padding:8px;">
-        <div style="display:inline-block;background:#c8e6c9;padding:8px;border-radius:2px;">
-          <div style="font-size:12px;font-weight:600;">N° DE CUENTA BCP</div>
-          <div>Soles: ${bankAccountSoles}</div>
-          <div>CCI: ${bankCCI}</div>
-          <div style="margin-top:6px;font-weight:bold;">${bankOwner}</div>
-        </div>
+        <div style="display:inline-block;background:#c8e6c9;padding:8px;border-radius:2px;">${bankHtml}</div>
       </td>`;
       infoHtml += '</tr>';
       infoHtml += '</table>';
@@ -892,7 +961,7 @@ export default function ClientList({ filterType = 'all' }: ClientListProps) {
     </div>
     <div style="margin-top:6px;">
       <div style="display:inline-block;background:#c8e6c9;padding:6px;font-size:11px;">
-        NOTA: UNA VEZ CANCELADO LA CUOTA MENSUAL, ENVIAR FOTO DEL VOUCHER AL NUMERO DE COBRANZA: ${cobranzaPhone}
+        NOTA: UNA VEZ CANCELADO LA CUOTA MENSUAL, ENVIAR FOTO DEL VOUCHER AL NUMERO DE COBRANZA: ${scheduleConfig.cobranzaPhone}
       </div>
     </div>
   `;

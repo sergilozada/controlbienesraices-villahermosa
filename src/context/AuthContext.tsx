@@ -1,4 +1,5 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
+import { CURRENT_PAYMENT_SCHEDULE_VERSION } from '@/config/paymentSchedule';
 
 interface User {
   id: string;
@@ -24,6 +25,7 @@ interface Client {
   inicial?: number;
   numeroCuotas?: number;
   fechaRegistro: string;
+  versionCronograma?: string;
   cuotas?: Cuota[];
 }
 
@@ -71,6 +73,8 @@ export const useAuth = () => {
   }
   return context;
 };
+
+export const useOptionalAuth = () => useContext(AuthContext);
 
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [user, setUser] = useState<User | null>(null);
@@ -136,6 +140,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       ...clientData,
       id: Date.now().toString(),
       fechaRegistro: new Date().toISOString().split('T')[0],
+      versionCronograma: CURRENT_PAYMENT_SCHEDULE_VERSION,
       cuotas: []
     };
     
