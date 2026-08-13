@@ -1,5 +1,6 @@
 {
   "hosting": {
+    "site": "villa-hermosa-lotes",
     "public": "dist",
     "ignore": [
       "firebase.json",
