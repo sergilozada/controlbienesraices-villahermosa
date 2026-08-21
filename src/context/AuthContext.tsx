@@ -1,5 +1,7 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
 import { CURRENT_PAYMENT_SCHEDULE_VERSION } from '@/config/paymentSchedule';
+import type { ClientMigrationFields, ClientMigrationState } from '@/types/paymentMigration';
+import { isLegacyMigrationEligible, isMigrationEnabled } from '@/types/paymentMigration';
 
 interface User {
   id: string;
@@ -7,7 +9,7 @@ interface User {
   role: 'admin' | 'full' | 'readonly';
 }
 
-interface Client {
+interface Client extends ClientMigrationFields {
   id: string;
   nombre1: string;
   nombre2?: string;
@@ -61,6 +63,8 @@ interface AuthContextType {
   markCuotaAsPaid: (clientId: string, cuotaIndex: number, fechaPago: string) => void;
   updateCuotaAmount: (clientId: string, newAmount: number) => void;
   updateCuotaDates: (clientId: string, cuotaIndex: number, newDate: string) => void;
+  updateClientMigration: (clientId: string, migration: ClientMigrationState) => Promise<void>;
+  updateMigratedClientsSchedule: (targetVersion: string) => Promise<number>;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -141,6 +145,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       id: Date.now().toString(),
       fechaRegistro: new Date().toISOString().split('T')[0],
       versionCronograma: CURRENT_PAYMENT_SCHEDULE_VERSION,
+      migracionElegible: false,
+      migracionActiva: false,
       cuotas: []
     };
     
@@ -153,8 +159,16 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   const updateClient = (id: string, clientData: Partial<Client>) => {
+    const safeClientData = { ...clientData };
+    delete safeClientData.versionCronograma;
+    delete safeClientData.migracionElegible;
+    delete safeClientData.migracionActiva;
+    delete safeClientData.migracionDesdeCuota;
+    delete safeClientData.versionCronogramaMigracion;
+    delete safeClientData.migracionActualizadaEn;
+
     setClients(prev => prev.map(client => 
-      client.id === id ? { ...client, ...clientData } : client
+      client.id === id ? { ...client, ...safeClientData } : client
     ));
   };
 
@@ -320,6 +334,71 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     updateCuota(clientId, cuotaIndex, { vencimiento: newDate });
   };
 
+  const updateClientMigration = async (clientId: string, migration: ClientMigrationState): Promise<void> => {
+    const normalizedMigrationVersion = migration.versionCronogramaMigracion.trim();
+    if (
+      !Number.isInteger(migration.migracionDesdeCuota) ||
+      migration.migracionDesdeCuota <= 0 ||
+      !normalizedMigrationVersion
+    ) {
+      throw new Error('La configuración de migración no es válida.');
+    }
+
+    const clientToUpdate = clients.find(client => client.id === clientId);
+    if (!clientToUpdate) {
+      throw new Error('El cliente no existe.');
+    }
+    if (!isLegacyMigrationEligible(clientToUpdate, CURRENT_PAYMENT_SCHEDULE_VERSION)) {
+      throw new Error('Los clientes nuevos no requieren ni admiten migración.');
+    }
+    if (
+      clientToUpdate.migracionActiva === true &&
+      migration.migracionActiva === true &&
+      clientToUpdate.migracionDesdeCuota !== migration.migracionDesdeCuota
+    ) {
+      throw new Error('Desactive la migración antes de cambiar la cuota de inicio.');
+    }
+
+    setClients(prev => prev.map(client => (
+      client.id === clientId
+        ? {
+            ...client,
+            migracionElegible: true,
+            migracionActiva: migration.migracionActiva,
+            migracionDesdeCuota: migration.migracionDesdeCuota,
+            versionCronogramaMigracion: normalizedMigrationVersion,
+            migracionActualizadaEn: migration.migracionActualizadaEn
+          }
+        : client
+    )));
+  };
+
+  const updateMigratedClientsSchedule = async (targetVersion: string): Promise<number> => {
+    const normalizedTargetVersion = targetVersion.trim();
+    if (!normalizedTargetVersion) {
+      throw new Error('La versión del cronograma oficial no puede estar vacía.');
+    }
+
+    const migratedCount = clients.filter(client => (
+      isMigrationEnabled(client, CURRENT_PAYMENT_SCHEDULE_VERSION)
+    )).length;
+    if (migratedCount === 0) return 0;
+
+    const updatedAt = new Date().toISOString();
+    setClients(prev => prev.map(client => (
+      isMigrationEnabled(client, CURRENT_PAYMENT_SCHEDULE_VERSION)
+        ? {
+            ...client,
+            migracionElegible: true,
+            versionCronogramaMigracion: normalizedTargetVersion,
+            migracionActualizadaEn: updatedAt
+          }
+        : client
+    )));
+
+    return migratedCount;
+  };
+
   const calculateMora = (vencimiento: string, monto: number): number => {
     const fechaVencimiento = parseLocalDate(vencimiento);
     const hoy = new Date();
@@ -376,7 +455,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       searchClients,
       markCuotaAsPaid,
       updateCuotaAmount,
-      updateCuotaDates
+      updateCuotaDates,
+      updateClientMigration,
+      updateMigratedClientsSchedule
     }}>
       {children}
     </AuthContext.Provider>
