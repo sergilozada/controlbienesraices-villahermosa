@@ -18,11 +18,13 @@ import {
   where, 
   onSnapshot,
   orderBy,
-  Timestamp
+  writeBatch
 } from 'firebase/firestore';
 import { auth, db, storage } from '@/services/firebase';
 import { ref as storageRef, listAll, deleteObject } from 'firebase/storage';
 import { CURRENT_PAYMENT_SCHEDULE_VERSION } from '@/config/paymentSchedule';
+import type { ClientMigrationFields, ClientMigrationState } from '@/types/paymentMigration';
+import { isLegacyMigrationEligible, isMigrationEnabled } from '@/types/paymentMigration';
 
 interface User {
   id: string;
@@ -31,7 +33,7 @@ interface User {
   email: string;
 }
 
-interface Client {
+interface Client extends ClientMigrationFields {
   id: string;
   nombre1: string;
   nombre2?: string;
@@ -88,6 +90,8 @@ interface AuthContextType {
   markCuotaAsPaid: (clientId: string, cuotaIndex: number, fechaPago: string) => Promise<void>;
   updateCuotaAmount: (clientId: string, newAmount: number) => Promise<void>;
   updateCuotaDates: (clientId: string, cuotaIndex: number, newDate: string) => Promise<void>;
+  updateClientMigration: (clientId: string, migration: ClientMigrationState) => Promise<void>;
+  updateMigratedClientsSchedule: (targetVersion: string) => Promise<number>;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -235,6 +239,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         userId: firebaseUser.uid,
         fechaRegistro: new Date().toISOString().split('T')[0],
         versionCronograma: CURRENT_PAYMENT_SCHEDULE_VERSION,
+        migracionElegible: false,
+        migracionActiva: false,
         cuotas: []
       };
 
@@ -258,8 +264,16 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const updateClient = async (id: string, clientData: Partial<Client>): Promise<void> => {
     try {
+      const safeClientData = { ...clientData };
+      delete safeClientData.versionCronograma;
+      delete safeClientData.migracionElegible;
+      delete safeClientData.migracionActiva;
+      delete safeClientData.migracionDesdeCuota;
+      delete safeClientData.versionCronogramaMigracion;
+      delete safeClientData.migracionActualizadaEn;
+
       const clientRef = doc(db, 'clients', id);
-      await updateDoc(clientRef, clientData);
+      await updateDoc(clientRef, safeClientData);
     } catch (error) {
       console.error('Error al actualizar cliente:', error);
     }
@@ -468,6 +482,97 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     await updateCuota(clientId, cuotaIndex, { vencimiento: newDate });
   };
 
+  const updateClientMigration = async (clientId: string, migration: ClientMigrationState): Promise<void> => {
+    if (!firebaseUser) {
+      throw new Error('Se requiere una sesión activa para actualizar la migración.');
+    }
+
+    const normalizedMigrationVersion = migration.versionCronogramaMigracion.trim();
+    if (
+      !Number.isInteger(migration.migracionDesdeCuota) ||
+      migration.migracionDesdeCuota <= 0 ||
+      !normalizedMigrationVersion
+    ) {
+      throw new Error('La configuración de migración no es válida.');
+    }
+
+    const clientRef = doc(db, 'clients', clientId);
+    const clientSnapshot = await getDoc(clientRef);
+
+    if (!clientSnapshot.exists()) {
+      throw new Error('El cliente no existe o no pertenece al usuario actual.');
+    }
+    const currentClientData = clientSnapshot.data();
+    if (currentClientData.userId !== firebaseUser.uid) {
+      throw new Error('El cliente no existe o no pertenece al usuario actual.');
+    }
+    if (!isLegacyMigrationEligible(currentClientData, CURRENT_PAYMENT_SCHEDULE_VERSION)) {
+      throw new Error('Los clientes nuevos no requieren ni admiten migración.');
+    }
+    if (
+      currentClientData.migracionActiva === true &&
+      migration.migracionActiva === true &&
+      currentClientData.migracionDesdeCuota !== migration.migracionDesdeCuota
+    ) {
+      throw new Error('Desactive la migración antes de cambiar la cuota de inicio.');
+    }
+
+    // Escribir campos explícitos evita reemplazar accidentalmente cuotas o pagos históricos.
+    await updateDoc(clientRef, {
+      migracionElegible: true,
+      migracionActiva: migration.migracionActiva,
+      migracionDesdeCuota: migration.migracionDesdeCuota,
+      versionCronogramaMigracion: normalizedMigrationVersion,
+      migracionActualizadaEn: migration.migracionActualizadaEn
+    });
+  };
+
+  const updateMigratedClientsSchedule = async (targetVersion: string): Promise<number> => {
+    if (!firebaseUser) {
+      throw new Error('Se requiere una sesión activa para actualizar el cronograma.');
+    }
+
+    const normalizedTargetVersion = targetVersion.trim();
+    if (!normalizedTargetVersion) {
+      throw new Error('La versión del cronograma oficial no puede estar vacía.');
+    }
+
+    // Consultar el estado vigente y limitarlo al usuario autenticado. Se filtra la
+    // migración en memoria para no exigir un índice compuesto adicional en Firestore.
+    const ownedClientsSnapshot = await getDocs(query(
+      collection(db, 'clients'),
+      where('userId', '==', firebaseUser.uid)
+    ));
+    const migratedClientRefs = ownedClientsSnapshot.docs
+      .filter(clientDoc => (
+        isMigrationEnabled(clientDoc.data(), CURRENT_PAYMENT_SCHEDULE_VERSION)
+      ))
+      .map(clientDoc => clientDoc.ref);
+
+    if (migratedClientRefs.length === 0) return 0;
+
+    const updatedAt = new Date().toISOString();
+    const batchSize = 450;
+
+    for (let start = 0; start < migratedClientRefs.length; start += batchSize) {
+      const batch = writeBatch(db);
+      const group = migratedClientRefs.slice(start, start + batchSize);
+
+      group.forEach(clientRef => {
+        // Solo cambian metadatos de presentación; `cuotas` queda intacto.
+        batch.update(clientRef, {
+          migracionElegible: true,
+          versionCronogramaMigracion: normalizedTargetVersion,
+          migracionActualizadaEn: updatedAt
+        });
+      });
+
+      await batch.commit();
+    }
+
+    return migratedClientRefs.length;
+  };
+
   const calculateMora = (vencimiento: string, monto: number): number => {
     const fechaVencimiento = parseLocalDate(vencimiento);
     const hoy = new Date();
@@ -522,7 +627,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       searchClients,
       markCuotaAsPaid,
       updateCuotaAmount,
-      updateCuotaDates
+      updateCuotaDates,
+      updateClientMigration,
+      updateMigratedClientsSchedule
     }}>
       {children}
     </AuthContext.Provider>

@@ -8,19 +8,45 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/u
 import { Badge } from '@/components/ui/badge';
 import { Label } from '@/components/ui/label';
 import { Checkbox } from '@/components/ui/checkbox';
-import { Edit, Trash2, Eye, Upload, Download, FileText } from 'lucide-react';
+import { Slider } from '@/components/ui/slider';
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger
+} from '@/components/ui/alert-dialog';
+import { ArrowRightLeft, Edit, Trash2, Eye, Upload, Download, FileText, RefreshCw } from 'lucide-react';
 import { toast } from 'sonner';
 import { storage } from '@/services/firebase';
 import { ref as storageRef, uploadBytes, getDownloadURL } from 'firebase/storage';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
-import { CURRENT_PAYMENT_SCHEDULE_VERSION } from '@/config/paymentSchedule';
+import {
+  CURRENT_PAYMENT_SCHEDULE_VERSION,
+  OFFICIAL_MIGRATION_SCHEDULE_VERSION
+} from '@/config/paymentSchedule';
+import type { ClientMigrationFields, ClientMigrationState } from '@/types/paymentMigration';
+import {
+  clampMigrationStart,
+  getEffectiveScheduleVersion,
+  getRegularInstallmentNumbers,
+  getSuggestedMigrationStart,
+  isLegacyMigrationEligible,
+  isMigrationEnabled,
+  isMigratedInstallment,
+  splitInstallmentsByMigration
+} from '@/types/paymentMigration';
 
 interface ClientListProps {
   filterType?: 'pending' | 'overdue' | 'all';
 }
 
-interface Client {
+interface Client extends ClientMigrationFields {
   id: string;
   nombre1: string;
   nombre2?: string;
@@ -58,6 +84,7 @@ interface Cuota {
 }
 
 interface PaymentScheduleConfig {
+  displayName: string;
   logoLayout: 'legacy-wide' | 'paired-square';
   logoUrls: string[];
   cobranzaPhone: string;
@@ -66,6 +93,7 @@ interface PaymentScheduleConfig {
 }
 
 const LEGACY_PAYMENT_SCHEDULE: PaymentScheduleConfig = {
+  displayName: 'Configuración anterior',
   logoLayout: 'legacy-wide',
   logoUrls: ['/logo.jpeg'],
   cobranzaPhone: '942252720',
@@ -79,6 +107,7 @@ const LEGACY_PAYMENT_SCHEDULE: PaymentScheduleConfig = {
 };
 
 const CURRENT_PAYMENT_SCHEDULE: PaymentScheduleConfig = {
+  displayName: 'Nueva empresa',
   logoLayout: 'paired-square',
   logoUrls: ['/logo-ayt-house.jpeg', '/logo-condominio-villa-hermosa.jpeg'],
   cobranzaPhone: '929 074 799',
@@ -92,14 +121,58 @@ const CURRENT_PAYMENT_SCHEDULE: PaymentScheduleConfig = {
   ]
 };
 
-const getPaymentScheduleConfig = (client: Client): PaymentScheduleConfig => (
-  client.versionCronograma === CURRENT_PAYMENT_SCHEDULE_VERSION
+const getPaymentScheduleConfigByVersion = (version?: string): PaymentScheduleConfig => (
+  version === CURRENT_PAYMENT_SCHEDULE_VERSION
     ? CURRENT_PAYMENT_SCHEDULE
     : LEGACY_PAYMENT_SCHEDULE
 );
 
+const getPaymentScheduleConfig = (client: Client, installmentNumber = 0): PaymentScheduleConfig => (
+  getPaymentScheduleConfigByVersion(
+    getEffectiveScheduleVersion(client, installmentNumber, CURRENT_PAYMENT_SCHEDULE_VERSION)
+  )
+);
+
+const isClientMigrationEligible = (client: Client): boolean => (
+  isLegacyMigrationEligible(client, CURRENT_PAYMENT_SCHEDULE_VERSION)
+);
+
+const isClientMigrationEnabled = (client: Client): boolean => (
+  isMigrationEnabled(client, CURRENT_PAYMENT_SCHEDULE_VERSION)
+);
+
+const isClientMigratedInstallment = (client: Client, installmentNumber: number): boolean => (
+  isMigratedInstallment(client, installmentNumber, CURRENT_PAYMENT_SCHEDULE_VERSION)
+);
+
+const getPaymentScheduleSections = (client: Client) => (
+  splitInstallmentsByMigration(
+    client,
+    client.cuotas || [],
+    CURRENT_PAYMENT_SCHEDULE_VERSION
+  ).map((section) => ({
+    ...section,
+    config: getPaymentScheduleConfig(client, section.installments[0]?.numero ?? 0)
+  }))
+);
+
 export default function ClientList({ filterType = 'all' }: ClientListProps) {
-  const { clients, deleteClient, updateClient, updateCuota, calculateMora, markCuotaAsPaid, updateCuotaAmount, updateCuotaDates, selectedClientId, setSelectedClientId, formatLocalISO, parseLocalDate } = useAnyAuth();
+  const {
+    clients,
+    deleteClient,
+    updateClient,
+    updateCuota,
+    calculateMora,
+    markCuotaAsPaid,
+    updateCuotaAmount,
+    updateCuotaDates,
+    updateClientMigration,
+    updateMigratedClientsSchedule,
+    selectedClientId,
+    setSelectedClientId,
+    formatLocalISO,
+    parseLocalDate
+  } = useAnyAuth();
   const [selectedClient, setSelectedClient] = useState<string | null>(selectedClientId || null);
   const [editingCuota, setEditingCuota] = useState<{ clientId: string; type: 'amount' | 'date'; cuotaIndex?: number } | null>(null);
   const [editMonto, setEditMonto] = useState('');
@@ -117,6 +190,83 @@ export default function ClientList({ filterType = 'all' }: ClientListProps) {
   const [editingEmailClientId, setEditingEmailClientId] = useState<string | null>(null);
   const [editEmail1, setEditEmail1] = useState('');
   const [editEmail2, setEditEmail2] = useState('');
+  const [migrationStartDraft, setMigrationStartDraft] = useState<number | null>(null);
+  const [migrationSaving, setMigrationSaving] = useState(false);
+  const [bulkMigrationUpdating, setBulkMigrationUpdating] = useState(false);
+
+  const getMigrationStart = (client: Client): number => (
+    clampMigrationStart(
+      migrationStartDraft ?? client.migracionDesdeCuota ?? getSuggestedMigrationStart(client.cuotas),
+      client.cuotas
+    )
+  );
+
+  const persistMigration = async (
+    client: Client,
+    active: boolean,
+    requestedStart = getMigrationStart(client)
+  ) => {
+    if (active && !isClientMigrationEligible(client)) {
+      toast.error('Los clientes nuevos ya usan el cronograma vigente y no requieren migración');
+      return;
+    }
+
+    const regularInstallments = getRegularInstallmentNumbers(client.cuotas);
+    if (regularInstallments.length === 0) {
+      toast.error('Este cliente no tiene cuotas regulares para migrar');
+      return;
+    }
+
+    const migrationStart = clampMigrationStart(requestedStart, client.cuotas);
+    const migration: ClientMigrationState = {
+      migracionActiva: active,
+      migracionDesdeCuota: migrationStart,
+      versionCronogramaMigracion: active && client.migracionActiva !== true
+        ? OFFICIAL_MIGRATION_SCHEDULE_VERSION
+        : client.versionCronogramaMigracion || OFFICIAL_MIGRATION_SCHEDULE_VERSION,
+      migracionActualizadaEn: new Date().toISOString()
+    };
+
+    setMigrationSaving(true);
+    try {
+      await updateClientMigration(client.id, migration);
+      setMigrationStartDraft(migrationStart);
+      toast.success(active
+        ? `Migración activada desde la cuota N.° ${migrationStart}`
+        : 'Migración desactivada correctamente');
+    } catch (err) {
+      console.error('Error actualizando la migración:', err);
+      setMigrationStartDraft(clampMigrationStart(
+        client.migracionDesdeCuota ?? getSuggestedMigrationStart(client.cuotas),
+        client.cuotas
+      ));
+      toast.error('No se pudo guardar la configuración de migración');
+    } finally {
+      setMigrationSaving(false);
+    }
+  };
+
+  const handleBulkMigrationUpdate = async () => {
+    setBulkMigrationUpdating(true);
+    try {
+      const updated = await updateMigratedClientsSchedule(OFFICIAL_MIGRATION_SCHEDULE_VERSION);
+      toast.success(`${updated} cliente${updated === 1 ? '' : 's'} migrado${updated === 1 ? '' : 's'} actualizado${updated === 1 ? '' : 's'}`);
+    } catch (err) {
+      console.error('Error actualizando cronogramas migrados:', err);
+      toast.error('No se pudo actualizar el cronograma de los clientes migrados');
+    } finally {
+      setBulkMigrationUpdating(false);
+    }
+  };
+
+  const openClientDetail = (client: Client) => {
+    setMigrationStartDraft(clampMigrationStart(
+      client.migracionDesdeCuota ?? getSuggestedMigrationStart(client.cuotas),
+      client.cuotas
+    ));
+    setSelectedClient(client.id);
+    setSelectedClientId(client.id);
+  };
 
   const startPhoneEdit = (client: Client) => {
     setEditingPhoneClientId(client.id);
@@ -133,9 +283,10 @@ export default function ClientList({ filterType = 'all' }: ClientListProps) {
   const savePhoneEdit = async () => {
     if (!editingPhoneClientId) return;
 
-    const payload: Partial<Client> = {};
-    payload.celular1 = editCelular1.trim();
-    payload.celular2 = editCelular2.trim();
+    const payload = {
+      celular1: editCelular1.trim(),
+      celular2: editCelular2.trim()
+    };
 
     try {
       await updateClient(editingPhoneClientId, payload);
@@ -162,7 +313,7 @@ export default function ClientList({ filterType = 'all' }: ClientListProps) {
   const saveEmailEdit = async () => {
     if (!editingEmailClientId) return;
 
-    const payload: Partial<Client> = {
+    const payload = {
       email1: editEmail1.trim(),
       email2: editEmail2.trim()
     };
@@ -276,7 +427,7 @@ export default function ClientList({ filterType = 'all' }: ClientListProps) {
       }
 
       // Single write (replace cuotas array)
-      updateClient(editingCuota.clientId, { cuotas: cuotasCopy })
+      Promise.resolve(updateClient(editingCuota.clientId, { cuotas: cuotasCopy }))
         .then(() => {
           setEditingCuota(null);
           setEditMonto('');
@@ -417,7 +568,7 @@ export default function ClientList({ filterType = 'all' }: ClientListProps) {
           // Concatenar con existentes si las hay. Normalize existing entries to objects of {url,name?}
           const client = clients.find(c => c.id === clientId);
           const existingRaw = client?.cuotas ? client.cuotas[cuotaIndex]?.[fileType] : undefined;
-          const normalize = (raw: any): Array<{ url: string; name?: string }> => {
+          const normalize = (raw: Cuota['voucher']): Array<{ url: string; name?: string }> => {
             if (!raw) return [];
             if (Array.isArray(raw)) return raw.map(r => (typeof r === 'string' ? { url: r } : r));
             return (typeof raw === 'string') ? [{ url: raw }] : [raw];
@@ -432,7 +583,7 @@ export default function ClientList({ filterType = 'all' }: ClientListProps) {
     input.click();
   };
 
-  const downloadAllFiles = (files: string | string[] | undefined, filenamePrefix: string) => {
+  const downloadAllFiles = (files: Cuota['voucher'], filenamePrefix: string) => {
     if (!files) return;
     // Normalize to array of objects {url, name?} or strings
     const arrRaw = Array.isArray(files) ? files : [files];
@@ -493,7 +644,7 @@ export default function ClientList({ filterType = 'all' }: ClientListProps) {
     })();
   };
 
-  const openAllFiles = (files: string | string[] | undefined) => {
+  const openAllFiles = (files: Cuota['voucher']) => {
     if (!files) return;
     const arrRaw = Array.isArray(files) ? files : [files];
     const arr = arrRaw.map(item => (typeof item === 'string' ? { url: item } : item)) as Array<{ url: string; name?: string }>;
@@ -514,6 +665,13 @@ export default function ClientList({ filterType = 'all' }: ClientListProps) {
     return `${day}/${month}/${year}`;
   };
 
+  const getEffectiveMora = (cuota: Cuota): number => {
+    if (cuota.numero === 0) return 0;
+    if (cuota.estado === 'pagado' && typeof cuota.mora === 'number') return cuota.mora;
+    if (cuota.manualMora === true && typeof cuota.mora === 'number') return cuota.mora;
+    return calculateMora(cuota.vencimiento, cuota.monto);
+  };
+
   // Prepare month/year options for the overdue filter
   const monthNames = ['Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Setiembre','Octubre','Noviembre','Diciembre'];
   const yearsSet = new Set<number>();
@@ -529,7 +687,20 @@ export default function ClientList({ filterType = 'all' }: ClientListProps) {
     (async () => {
       const doc = new jsPDF('p', 'mm', 'a4');
       const pageWidth = 210;
-      const scheduleConfig = getPaymentScheduleConfig(client);
+      const migrationActive = isClientMigrationEnabled(client);
+      const scheduleSections = client.cuotas?.length > 0
+        ? [{
+            kind: migrationActive ? 'migration' as const : 'base' as const,
+            installments: [...client.cuotas],
+            config: migrationActive
+              ? getPaymentScheduleConfigByVersion(OFFICIAL_MIGRATION_SCHEDULE_VERSION)
+              : getPaymentScheduleConfig(client)
+          }]
+        : [];
+      if (scheduleSections.length === 0) {
+        toast.error('El cliente no tiene cuotas para exportar');
+        return;
+      }
       // Try to fetch logo and embed as base64
       const fetchImageAsDataURL = async (url: string) => {
         try {
@@ -546,6 +717,12 @@ export default function ClientList({ filterType = 'all' }: ClientListProps) {
           return null;
         }
       };
+
+      for (let sectionIndex = 0; sectionIndex < scheduleSections.length; sectionIndex += 1) {
+        const section = scheduleSections[sectionIndex];
+        const scheduleConfig = section.config;
+        const sectionCuotas = section.installments;
+        if (sectionIndex > 0) doc.addPage();
 
       let logoData: Array<string | null> = [];
       try {
@@ -666,10 +843,8 @@ export default function ClientList({ filterType = 'all' }: ClientListProps) {
   const tableStartY = bankY + boxHeight + 12;
 
       // Prepare table rows, computing mora (manual or calculated) and total per row
-      const rows = (client.cuotas || []).map((cuota) => {
-        // Match UI behaviour: initial cuota (numero === 0) must show mora = 0.
-        // If mora was manually set (manualMora === true) prefer that value; otherwise calculate it.
-        const moraDisplayed = cuota.numero === 0 ? 0 : ((typeof cuota.mora === 'number' && (cuota as any).manualMora === true) ? cuota.mora : calculateMora(cuota.vencimiento, cuota.monto));
+      const rows = sectionCuotas.map((cuota) => {
+        const moraDisplayed = getEffectiveMora(cuota);
         const totalForRow = cuota.monto + moraDisplayed;
         return [
           cuota.numero === 0 ? 'Inicial' : String(cuota.numero),
@@ -684,74 +859,28 @@ export default function ClientList({ filterType = 'all' }: ClientListProps) {
         ];
       });
 
-      // Use autoTable if available, otherwise draw simple text table
+      // Use the ESM autoTable function and read the final position from jsPDF.
       let tableEndY = tableStartY;
       try {
-        const docWithAutoTable = doc as jsPDF & { autoTable: (options: Record<string, unknown>) => { finalY: number } };
-          if (typeof docWithAutoTable.autoTable === 'function') {
-          const res = docWithAutoTable.autoTable({
-            startY: tableStartY,
-            margin: { left: 20, right: 20 },
-            head: [['N°','vencimiento','Monto','Mora','Total','Fecha de Pago','Estado','Vouchers','Boletas']],
-            body: rows,
-            theme: 'grid',
-            styles: { fontSize: 9, cellPadding: 3 },
-            headStyles: { fillColor: [0,102,204], textColor: 255 },
-            alternateRowStyles: { fillColor: [245,245,245] },
-            columnStyles: {
-              1: { cellWidth: 26 }, // vencimiento
-              2: { cellWidth: 18 }, // monto
-              5: { cellWidth: 24 }, // Fecha de Pago
-              6: { cellWidth: 20 }, // Estado
-              7: { cellWidth: 18 }, // Vouchers
-              8: { cellWidth: 14 }  // Boletas
-            }
-          });
-          // If autoTable returns a finalY, use it to place totals immediately after the table
-          if (res && typeof res.finalY === 'number') tableEndY = res.finalY + 6;
-        } else {
-          // Manual table drawing if autoTable not available
-          // colWidths chosen to fit A4 content width (pageWidth - 40 = 170)
-          // Reduce vencimiento and monto widths, widen vouchers/boletas
-          // manual column widths tuned to sum to 170 (pageWidth - 40)
-          const colWidths = [14, 26, 18, 14, 22, 24, 20, 18, 14]; // tuned widths, sum = 170
-          const startX = 20;
-          let y = tableStartY;
-          const headerHeight = 8;
-          // Draw header background in blue using the sum of column widths (avoid mismatch)
-          doc.setFillColor(0,102,204);
-          doc.setDrawColor(0,102,204);
-          const headerWidth = colWidths.reduce((s, w) => s + w, 0);
-          doc.rect(startX, y, headerWidth, headerHeight, 'F');
-          doc.setTextColor(255);
-          doc.setFontSize(9);
-          // header labels (short)
-          const headers = ['N°','vencimiento','Monto','Mora','Total','Fecha Pago','Estado','Vouchers','Boletas'];
-          let x = startX;
-          for (let i = 0; i < headers.length; i++) {
-            doc.text(headers[i], x + 2, y + 6);
-            x += colWidths[i];
+        autoTable(doc, {
+          startY: tableStartY,
+          margin: { left: 20, right: 20 },
+          head: [['N°','vencimiento','Monto','Mora','Total','Fecha de Pago','Estado','Vouchers','Boletas']],
+          body: rows,
+          theme: 'grid',
+          styles: { fontSize: 9, cellPadding: 3 },
+          headStyles: { fillColor: [0,102,204], textColor: 255 },
+          alternateRowStyles: { fillColor: [245,245,245] },
+          columnStyles: {
+            1: { cellWidth: 26 },
+            2: { cellWidth: 18 },
+            5: { cellWidth: 24 },
+            6: { cellWidth: 20 },
+            7: { cellWidth: 18 },
+            8: { cellWidth: 14 }
           }
-          y += headerHeight + 2;
-          // rows
-          doc.setTextColor(0);
-          // Draw row borders and content
-          rows.forEach(r => {
-            x = startX;
-            // draw cell rectangles for the row
-            for (let i = 0; i < r.length; i++) {
-              doc.setDrawColor(0,102,204);
-              doc.rect(x, y - 2, colWidths[i], 10);
-              const cellText = String(r[i]);
-              const cellLines = doc.splitTextToSize(cellText, colWidths[i] - 4);
-              doc.text(cellLines, x + 2, y + 6);
-              x += colWidths[i];
-            }
-            y += 10;
-            if (y > 270) { doc.addPage(); y = 20; }
-          });
-          tableEndY = y + 4; // set end position so totals go right after table
-        }
+        });
+        tableEndY = (doc.lastAutoTable?.finalY ?? tableStartY) + 6;
       } catch (err) {
         console.error('autoTable error', err);
         // If something else fails, at least dump rows safely
@@ -779,13 +908,13 @@ export default function ClientList({ filterType = 'all' }: ClientListProps) {
         // Compute totals using the same displayed values shown in the modal table:
         // displayedMora = cuota.numero === 0 ? 0 : (manualMora ? cuota.mora : calculateMora(...))
         // totalDisplayed = cuota.monto + displayedMora
-        const totalPagado = (client.cuotas || []).reduce((acc, c) => {
-          const moraDisplayed = c.numero === 0 ? 0 : ((typeof c.mora === 'number' && (c as any).manualMora === true) ? c.mora : calculateMora(c.vencimiento, c.monto));
+        const totalPagado = sectionCuotas.reduce((acc, c) => {
+          const moraDisplayed = getEffectiveMora(c);
           const totalDisplayed = (c.monto || 0) + moraDisplayed;
           return acc + ((c.estado === 'pagado') ? totalDisplayed : 0);
         }, 0);
-        const totalPendiente = (client.cuotas || []).reduce((acc, c) => {
-          const moraDisplayed = c.numero === 0 ? 0 : ((typeof c.mora === 'number' && (c as any).manualMora === true) ? c.mora : calculateMora(c.vencimiento, c.monto));
+        const totalPendiente = sectionCuotas.reduce((acc, c) => {
+          const moraDisplayed = getEffectiveMora(c);
           const totalDisplayed = (c.monto || 0) + moraDisplayed;
           return acc + ((c.estado !== 'pagado') ? totalDisplayed : 0);
         }, 0);
@@ -818,6 +947,7 @@ export default function ClientList({ filterType = 'all' }: ClientListProps) {
       } catch (err) {
         console.error('PDF footer error', err);
       }
+      }
 
       try {
         doc.save(`cronograma_${client.nombre1}_${client.dni1}.pdf`);
@@ -831,7 +961,12 @@ export default function ClientList({ filterType = 'all' }: ClientListProps) {
 
   const exportToExcel = (client: Client) => {
     (async () => {
-      const scheduleConfig = getPaymentScheduleConfig(client);
+      const scheduleSections = getPaymentScheduleSections(client);
+      if (scheduleSections.length === 0) {
+        toast.error('El cliente no tiene cuotas para exportar');
+        return;
+      }
+
       // Try to fetch logo as base64 to embed in the HTML
       const fetchImageAsDataURL = async (url: string) => {
         try {
@@ -849,124 +984,126 @@ export default function ClientList({ filterType = 'all' }: ClientListProps) {
         }
       };
 
-      const logoData = await Promise.all(scheduleConfig.logoUrls.map(fetchImageAsDataURL));
+      const sectionHtmlBlocks: string[] = [];
 
-      const rows: string[] = [];
-      // Header with logo + title
-      let headerHtml = '<div style="text-align:center;">';
-      if (scheduleConfig.logoLayout === 'paired-square') {
-        const leftLogo = logoData[0]
-          ? `<img src="${logoData[0]}" width="174" height="174" style="display:block;"/>`
-          : '';
-        const rightLogo = logoData[1]
-          ? `<img src="${logoData[1]}" width="174" height="174" style="display:block;margin-left:auto;"/>`
-          : '';
-        headerHtml += `<table role="presentation" style="width:100%;border-collapse:collapse;"><tr>
-          <td width="50%" align="left" style="padding-left:19px;">${leftLogo}</td>
-          <td width="50%" align="right" style="padding-right:19px;">${rightLogo}</td>
-        </tr></table>`;
-      } else if (logoData[0]) {
-        headerHtml += `<img src="${logoData[0]}" style="width:100%;height:auto;"/>`;
+      for (let sectionIndex = 0; sectionIndex < scheduleSections.length; sectionIndex += 1) {
+        const section = scheduleSections[sectionIndex];
+        const scheduleConfig = section.config;
+        const sectionCuotas = section.installments;
+        const logoData = await Promise.all(scheduleConfig.logoUrls.map(fetchImageAsDataURL));
+
+        let headerHtml = '<div style="text-align:center;">';
+        if (scheduleConfig.logoLayout === 'paired-square') {
+          const leftLogo = logoData[0]
+            ? `<img src="${logoData[0]}" width="174" height="174" style="display:block;"/>`
+            : '';
+          const rightLogo = logoData[1]
+            ? `<img src="${logoData[1]}" width="174" height="174" style="display:block;margin-left:auto;"/>`
+            : '';
+          headerHtml += `<table role="presentation" style="width:100%;border-collapse:collapse;"><tr>
+            <td width="50%" align="left" style="padding-left:19px;">${leftLogo}</td>
+            <td width="50%" align="right" style="padding-right:19px;">${rightLogo}</td>
+          </tr></table>`;
+        } else if (logoData[0]) {
+          headerHtml += `<img src="${logoData[0]}" style="width:100%;height:auto;"/>`;
+        }
+        headerHtml += '<h2>CRONOGRAMA DE PAGOS</h2>';
+        if (isClientMigrationEnabled(client)) {
+          const migrationStart = Number(client.migracionDesdeCuota);
+          const sectionTitle = section.kind === 'migration'
+            ? `NUEVA EMPRESA - CUOTA ${migrationStart} EN ADELANTE`
+            : migrationStart === 1
+              ? 'CONFIGURACION BASE - CUOTA INICIAL'
+              : `CONFIGURACION BASE - CUOTA INICIAL Y CUOTAS 1 A ${migrationStart - 1}`;
+          headerHtml += `<h3 style="margin:0 0 6px;">${sectionTitle}</h3>`;
+        }
+        headerHtml += `<div style="background:#ffd700;padding:4px;margin-bottom:6px;">Telefono de cobranza Villa Hermosa: ${scheduleConfig.cobranzaPhone}</div>`;
+        headerHtml += '</div>';
+
+        let infoHtml = '<table style="width:100%;border-collapse:collapse;margin-bottom:8px;"><tr>';
+        infoHtml += '<td style="vertical-align:top;width:60%;"><table style="width:100%;">';
+        infoHtml += `<tr><td><strong>Nombre 1</strong></td><td>${client.nombre1 || ''}</td></tr>`;
+        if (client.nombre2) infoHtml += `<tr><td><strong>Nombre 2</strong></td><td>${client.nombre2}</td></tr>`;
+        infoHtml += `<tr><td><strong>DNI 1</strong></td><td>${client.dni1 || ''}</td></tr>`;
+        if (client.dni2) infoHtml += `<tr><td><strong>DNI 2</strong></td><td>${client.dni2}</td></tr>`;
+        infoHtml += `<tr><td><strong>Celular 1</strong></td><td>${client.celular1 || ''}</td></tr>`;
+        if (client.celular2) infoHtml += `<tr><td><strong>Celular 2</strong></td><td>${client.celular2}</td></tr>`;
+        infoHtml += `<tr><td><strong>Gmail 1</strong></td><td>${client.email1 || ''}</td></tr>`;
+        if (client.email2) infoHtml += `<tr><td><strong>Gmail 2</strong></td><td>${client.email2}</td></tr>`;
+        infoHtml += `<tr><td><strong>Precio total</strong></td><td>S/ ${client.montoTotal.toFixed(2)}</td></tr>`;
+        infoHtml += '<tr><td><strong>Moneda</strong></td><td>SOLES</td></tr>';
+        infoHtml += `<tr><td><strong>Proyecto</strong></td><td>${scheduleConfig.projectName}</td></tr>`;
+        infoHtml += `<tr><td><strong>Manzana</strong></td><td>${client.manzana}</td></tr>`;
+        infoHtml += `<tr><td><strong>Lote</strong></td><td>${client.lote}</td></tr>`;
+        infoHtml += `<tr><td><strong>Metraje</strong></td><td>${client.metraje} m2</td></tr>`;
+        infoHtml += '</table></td>';
+
+        const bankHtml = scheduleConfig.logoLayout === 'legacy-wide'
+          ? `<div style="font-size:12px;font-weight:600;">${scheduleConfig.bankLines[0]}</div>
+            <div>${scheduleConfig.bankLines[1]}</div>
+            <div>${scheduleConfig.bankLines[2]}</div>
+            <div style="margin-top:6px;font-weight:bold;">${scheduleConfig.bankLines[3]}</div>`
+          : scheduleConfig.bankLines.map((line, index) => (
+            `<div style="${index === scheduleConfig.bankLines.length - 1 ? 'margin-top:6px;font-weight:bold;' : ''}">${line}</div>`
+          )).join('');
+        infoHtml += `<td style="vertical-align:top;padding:8px;">
+          <div style="display:inline-block;background:#c8e6c9;padding:8px;border-radius:2px;">${bankHtml}</div>
+        </td></tr></table>`;
+
+        let tableHtml = '<table border="1" style="width:100%;border-collapse:collapse;border:1px solid #0066cc;">';
+        tableHtml += '<tr style="background:#0066cc;color:#fff;">'
+          + '<th style="width:6%;">N°</th>'
+          + '<th style="width:12%;">vencimiento</th>'
+          + '<th style="width:10%;">Monto</th>'
+          + '<th style="width:8%;">Mora</th>'
+          + '<th style="width:12%;">Total</th>'
+          + '<th style="width:12%;">Fecha Pago</th>'
+          + '<th style="width:18%;">Estado</th>'
+          + '<th style="width:12%;">Vouchers</th>'
+          + '<th style="width:10%;">Boletas</th>'
+          + '</tr>';
+        sectionCuotas.forEach(cuota => {
+          const vouchersCount = Array.isArray(cuota.voucher) ? cuota.voucher.length : (cuota.voucher ? 1 : 0);
+          const boletasCount = Array.isArray(cuota.boleta) ? cuota.boleta.length : (cuota.boleta ? 1 : 0);
+          const moraDisplayed = getEffectiveMora(cuota);
+          const totalDisplayed = cuota.monto + moraDisplayed;
+          tableHtml += `<tr>
+            <td>${cuota.numero === 0 ? 'Inicial' : cuota.numero}</td>
+            <td>${formatDate(cuota.vencimiento)}</td>
+            <td>S/ ${cuota.monto.toFixed(2)}</td>
+            <td>S/ ${moraDisplayed.toFixed(2)}</td>
+            <td>S/ ${totalDisplayed.toFixed(2)}</td>
+            <td>${cuota.fechaPago ? formatDate(cuota.fechaPago) : ''}</td>
+            <td>${cuota.estado}</td>
+            <td>${vouchersCount > 0 ? vouchersCount + ' voucher(s)' : ''}</td>
+            <td>${boletasCount > 0 ? boletasCount + ' boleta(s)' : ''}</td>
+          </tr>`;
+        });
+        tableHtml += '</table>';
+
+        const totalPagado = sectionCuotas.reduce((acc, cuota) => {
+          const totalDisplayed = cuota.monto + getEffectiveMora(cuota);
+          return acc + (cuota.estado === 'pagado' ? totalDisplayed : 0);
+        }, 0);
+        const totalPendiente = sectionCuotas.reduce((acc, cuota) => {
+          const totalDisplayed = cuota.monto + getEffectiveMora(cuota);
+          return acc + (cuota.estado !== 'pagado' ? totalDisplayed : 0);
+        }, 0);
+        const footerHtml = `
+          <div style="margin-top:8px;">
+            <div>Importe total pagado S/ ${totalPagado.toFixed(2)}</div>
+            <div>Importe pendiente S/ ${totalPendiente.toFixed(2)}</div>
+          </div>
+          <div style="margin-top:6px;">
+            <div style="display:inline-block;background:#c8e6c9;padding:6px;font-size:11px;">
+              NOTA: UNA VEZ CANCELADO LA CUOTA MENSUAL, ENVIAR FOTO DEL VOUCHER AL NUMERO DE COBRANZA: ${scheduleConfig.cobranzaPhone}
+            </div>
+          </div>`;
+        const breakStyle = sectionIndex > 0 ? 'page-break-before:always;' : '';
+        sectionHtmlBlocks.push(`<section style="${breakStyle}">${headerHtml}${infoHtml}${tableHtml}${footerHtml}</section>`);
       }
-      headerHtml += `<h2>CRONOGRAMA DE PAGOS</h2>`;
-      headerHtml += `<div style="background:#ffd700;padding:4px;margin-bottom:6px;">Telefono de cobranza Villa Hermosa: ${scheduleConfig.cobranzaPhone}</div>`;
-      headerHtml += '</div>';
 
-      // Client and bank info with separate columns for names, DNIs, phones, emails
-      let infoHtml = '<table style="width:100%;border-collapse:collapse;margin-bottom:8px;">';
-  infoHtml += '<tr>';
-  infoHtml += `<td style="vertical-align:top;width:60%;">`;
-  infoHtml += '<table style="width:100%;">';
-  infoHtml += `<tr><td><strong>Nombre 1</strong></td><td>${client.nombre1 || ''}</td></tr>`;
-  if (client.nombre2) infoHtml += `<tr><td><strong>Nombre 2</strong></td><td>${client.nombre2}</td></tr>`;
-  infoHtml += `<tr><td><strong>DNI 1</strong></td><td>${client.dni1 || ''}</td></tr>`;
-  if (client.dni2) infoHtml += `<tr><td><strong>DNI 2</strong></td><td>${client.dni2}</td></tr>`;
-  infoHtml += `<tr><td><strong>Celular 1</strong></td><td>${client.celular1 || ''}</td></tr>`;
-  if (client.celular2) infoHtml += `<tr><td><strong>Celular 2</strong></td><td>${client.celular2}</td></tr>`;
-  infoHtml += `<tr><td><strong>Gmail 1</strong></td><td>${client.email1 || ''}</td></tr>`;
-  if (client.email2) infoHtml += `<tr><td><strong>Gmail 2</strong></td><td>${client.email2}</td></tr>`;
-      infoHtml += `<tr><td><strong>Precio total</strong></td><td>S/ ${client.montoTotal.toFixed(2)}</td></tr>`;
-      infoHtml += `<tr><td><strong>Moneda</strong></td><td>SOLES</td></tr>`;
-      infoHtml += `<tr><td><strong>Proyecto</strong></td><td>${scheduleConfig.projectName}</td></tr>`;
-      infoHtml += `<tr><td><strong>Manzana</strong></td><td>${client.manzana}</td></tr>`;
-      infoHtml += `<tr><td><strong>Lote</strong></td><td>${client.lote}</td></tr>`;
-      infoHtml += `<tr><td><strong>Metraje</strong></td><td>${client.metraje} m2</td></tr>`;
-      infoHtml += '</table>';
-      infoHtml += '</td>';
-      // make bank box an inline green block sized to content
-      const bankHtml = scheduleConfig.logoLayout === 'legacy-wide'
-        ? `<div style="font-size:12px;font-weight:600;">${scheduleConfig.bankLines[0]}</div>
-          <div>${scheduleConfig.bankLines[1]}</div>
-          <div>${scheduleConfig.bankLines[2]}</div>
-          <div style="margin-top:6px;font-weight:bold;">${scheduleConfig.bankLines[3]}</div>`
-        : scheduleConfig.bankLines.map((line, index) => (
-          `<div style="${index === scheduleConfig.bankLines.length - 1 ? 'margin-top:6px;font-weight:bold;' : ''}">${line}</div>`
-        )).join('');
-      infoHtml += `<td style="vertical-align:top;padding:8px;">
-        <div style="display:inline-block;background:#c8e6c9;padding:8px;border-radius:2px;">${bankHtml}</div>
-      </td>`;
-      infoHtml += '</tr>';
-      infoHtml += '</table>';
-
-      // Table of cuotas
-  let tableHtml = '<table border="1" style="width:100%;border-collapse:collapse;border:1px solid #0066cc;">';
-  // Add width hints for columns so Estado and Boletas have more room
-  tableHtml += '<tr style="background:#0066cc;color:#fff;">'
-    + '<th style="width:6%;">N°</th>'
-    + '<th style="width:12%;">vencimiento</th>'
-    + '<th style="width:10%;">Monto</th>'
-    + '<th style="width:8%;">Mora</th>'
-    + '<th style="width:12%;">Total</th>'
-    + '<th style="width:12%;">Fecha Pago</th>'
-    + '<th style="width:18%;">Estado</th>'
-    + '<th style="width:12%;">Vouchers</th>'
-    + '<th style="width:10%;">Boletas</th>'
-    + '</tr>';
-      (client.cuotas || []).forEach(cuota => {
-        const vouchersCount = Array.isArray(cuota.voucher) ? cuota.voucher.length : (cuota.voucher ? 1 : 0);
-        const boletasCount = Array.isArray(cuota.boleta) ? cuota.boleta.length : (cuota.boleta ? 1 : 0);
-        // Match UI: initial cuota has no mora
-        const moraDisplayed = cuota.numero === 0 ? 0 : ((typeof cuota.mora === 'number' && (cuota as any).manualMora === true) ? cuota.mora : calculateMora(cuota.vencimiento, cuota.monto));
-        const totalDisplayed = cuota.total ?? (cuota.monto + moraDisplayed);
-        tableHtml += `<tr>
-          <td>${cuota.numero === 0 ? 'Inicial' : cuota.numero}</td>
-          <td>${formatDate(cuota.vencimiento)}</td>
-          <td>S/ ${cuota.monto.toFixed(2)}</td>
-          <td>S/ ${moraDisplayed.toFixed(2)}</td>
-          <td>S/ ${totalDisplayed.toFixed(2)}</td>
-          <td>${cuota.fechaPago ? formatDate(cuota.fechaPago) : ''}</td>
-          <td>${cuota.estado}</td>
-          <td>${vouchersCount > 0 ? vouchersCount + ' voucher(s)' : ''}</td>
-          <td>${boletasCount > 0 ? boletasCount + ' boleta(s)' : ''}</td>
-        </tr>`;
-      });
-      tableHtml += '</table>';
-
-  // Footer note placed directly below the table
-  // Use same displayed totals as the modal (monto + displayedMora)
-  const totalPagado = (client.cuotas || []).reduce((acc, c) => {
-    const moraDisplayed = c.numero === 0 ? 0 : ((typeof c.mora === 'number' && (c as any).manualMora === true) ? c.mora : calculateMora(c.vencimiento, c.monto));
-    const totalDisplayed = (c.monto || 0) + moraDisplayed;
-    return acc + ((c.estado === 'pagado') ? totalDisplayed : 0);
-  }, 0);
-  const totalPendiente = (client.cuotas || []).reduce((acc, c) => {
-    const moraDisplayed = c.numero === 0 ? 0 : ((typeof c.mora === 'number' && (c as any).manualMora === true) ? c.mora : calculateMora(c.vencimiento, c.monto));
-    const totalDisplayed = (c.monto || 0) + moraDisplayed;
-    return acc + ((c.estado !== 'pagado') ? totalDisplayed : 0);
-  }, 0);
-  const footerHtml = `
-    <div style="margin-top:8px;">
-      <div>Importe total pagado S/ ${totalPagado.toFixed(2)}</div>
-      <div>Importe pendiente S/ ${totalPendiente.toFixed(2)}</div>
-    </div>
-    <div style="margin-top:6px;">
-      <div style="display:inline-block;background:#c8e6c9;padding:6px;font-size:11px;">
-        NOTA: UNA VEZ CANCELADO LA CUOTA MENSUAL, ENVIAR FOTO DEL VOUCHER AL NUMERO DE COBRANZA: ${scheduleConfig.cobranzaPhone}
-      </div>
-    </div>
-  `;
-
-  const fullHtml = `<!doctype html><html><head><meta charset="utf-8"></head><body>${headerHtml}${infoHtml}${tableHtml}${footerHtml}</body></html>`;
+      const fullHtml = `<!doctype html><html><head><meta charset="utf-8"></head><body>${sectionHtmlBlocks.join('')}</body></html>`;
 
       const blob = new Blob([fullHtml], { type: 'application/vnd.ms-excel' });
       const url = URL.createObjectURL(blob);
@@ -989,11 +1126,7 @@ export default function ClientList({ filterType = 'all' }: ClientListProps) {
     }
 
     return (client.cuotas || []).reduce((totals, cuota) => {
-      const mora = cuota.numero === 0
-        ? 0
-        : ((typeof cuota.mora === 'number' && cuota.manualMora === true)
-          ? cuota.mora
-          : calculateMora(cuota.vencimiento, cuota.monto));
+      const mora = getEffectiveMora(cuota);
       const importe = Number(cuota.monto || 0) + Number(mora || 0);
 
       if (cuota.estado === 'pagado') {
@@ -1020,6 +1153,9 @@ export default function ClientList({ filterType = 'all' }: ClientListProps) {
 
       const financedClients = filteredClients.filter(client => client.formaPago === 'cuotas');
       const cashClients = filteredClients.filter(client => client.formaPago === 'contado');
+      const legacyEligibleClients = filteredClients.filter(client => isClientMigrationEligible(client));
+      const newClients = filteredClients.filter(client => !isClientMigrationEligible(client));
+      const migratedClients = filteredClients.filter(client => isClientMigrationEnabled(client));
 
       const calculateGroupTotals = (group: Client[]) => group.reduce((acc, client) => {
         const paymentTotals = getClientPaymentTotals(client);
@@ -1067,6 +1203,9 @@ export default function ClientList({ filterType = 'all' }: ClientListProps) {
             `${Number(client.metraje || 0).toFixed(2)} m2`,
             money(client.montoTotal),
             client.numeroCuotas || 0,
+            isClientMigrationEnabled(client)
+              ? `Sí, desde cuota ${client.migracionDesdeCuota}`
+              : isClientMigrationEligible(client) ? 'No' : 'No aplica',
             money(paymentTotals.totalPagado),
             money(paymentTotals.totalPendiente)
           ];
@@ -1076,7 +1215,7 @@ export default function ClientList({ filterType = 'all' }: ClientListProps) {
           startY,
           head: [[
             'N°', 'Nombres', 'DNIs', 'Celulares', 'Emails', 'Mz.', 'Lote', 'Metraje',
-            'Monto total', 'Cuotas',
+            'Monto total', 'Cuotas', 'Migración',
             'Total pagado (incl. inicial)', 'Monto pendiente'
           ]],
           body: rows,
@@ -1129,6 +1268,9 @@ export default function ClientList({ filterType = 'all' }: ClientListProps) {
         ['Total de clientes', String(filteredClients.length)],
         ['Clientes financiados', String(financedClients.length)],
         ['Clientes al contado', String(cashClients.length)],
+        ['Clientes antiguos migrados', String(migratedClients.length)],
+        ['Clientes antiguos sin migrar', String(legacyEligibleClients.length - migratedClients.length)],
+        ['Clientes nuevos (migración no aplica)', String(newClients.length)],
         ['Valor total de contratos', money(totals.montoTotal)],
         ['TOTAL PAGADO POR TODOS LOS CLIENTES', money(totals.pagado)],
         ['TOTAL PENDIENTE DE TODOS LOS CLIENTES', money(totals.pendiente)]
@@ -1143,9 +1285,13 @@ export default function ClientList({ filterType = 'all' }: ClientListProps) {
         styles: { fontSize: 9, cellPadding: 2.5 },
         headStyles: { fillColor: [22, 101, 52], textColor: 255, fontStyle: 'bold' },
         columnStyles: { 0: { fontStyle: 'bold' }, 1: { halign: 'right' } },
-        didParseCell: (data: any) => {
-          if (data.section === 'body' && data.row.index >= 4) {
-            data.cell.styles.fillColor = data.row.index === 4 ? [220, 252, 231] : [254, 226, 226];
+        didParseCell: (data: {
+          section: string;
+          row: { index: number };
+          cell: { styles: { fillColor: number[]; fontStyle: string } };
+        }) => {
+          if (data.section === 'body' && data.row.index >= 7) {
+            data.cell.styles.fillColor = data.row.index === 7 ? [220, 252, 231] : [254, 226, 226];
             data.cell.styles.fontStyle = 'bold';
           }
         },
@@ -1167,16 +1313,50 @@ export default function ClientList({ filterType = 'all' }: ClientListProps) {
   };
 
   const filteredClients = getFilteredClients();
+  const activeMigratedClientsCount = clients.filter((client: Client) => (
+    isClientMigrationEnabled(client)
+  )).length;
 
   return (
     <div className="space-y-6 w-full">
       <Card>
         <CardHeader className="flex flex-row items-center justify-between gap-4">
           <CardTitle>Total de clientes: {filteredClients.length}</CardTitle>
-          <Button onClick={exportClientsToPDF} disabled={filteredClients.length === 0}>
-            <Download className="w-4 h-4 mr-2" />
-            Descargar clientes PDF
-          </Button>
+          <div className="flex flex-wrap justify-end gap-2">
+            {filterType === 'all' && (
+              <AlertDialog>
+                <AlertDialogTrigger asChild>
+                  <Button
+                    variant="outline"
+                    disabled={activeMigratedClientsCount === 0 || bulkMigrationUpdating}
+                  >
+                    <RefreshCw className={`w-4 h-4 mr-2 ${bulkMigrationUpdating ? 'animate-spin' : ''}`} />
+                    {bulkMigrationUpdating
+                      ? 'Actualizando…'
+                      : `Actualizar cronograma migrados (${activeMigratedClientsCount})`}
+                  </Button>
+                </AlertDialogTrigger>
+                <AlertDialogContent>
+                  <AlertDialogHeader>
+                    <AlertDialogTitle>¿Actualizar el cronograma de clientes migrados?</AlertDialogTitle>
+                    <AlertDialogDescription>
+                      Se aplicará el cronograma oficial registrado a {activeMigratedClientsCount} cliente{activeMigratedClientsCount === 1 ? '' : 's'} antiguo{activeMigratedClientsCount === 1 ? '' : 's'} con migración activada. Los clientes nuevos no participan; toda la información histórica de cuotas, pagos, mora, vouchers y boletas permanecerá sin cambios.
+                    </AlertDialogDescription>
+                  </AlertDialogHeader>
+                  <AlertDialogFooter>
+                    <AlertDialogCancel>Cancelar</AlertDialogCancel>
+                    <AlertDialogAction onClick={handleBulkMigrationUpdate}>
+                      Confirmar actualización
+                    </AlertDialogAction>
+                  </AlertDialogFooter>
+                </AlertDialogContent>
+              </AlertDialog>
+            )}
+            <Button onClick={exportClientsToPDF} disabled={filteredClients.length === 0}>
+              <Download className="w-4 h-4 mr-2" />
+              Descargar clientes PDF
+            </Button>
+          </div>
         </CardHeader>
         <CardContent>
           {filterType === 'overdue' && (
@@ -1222,6 +1402,7 @@ export default function ClientList({ filterType = 'all' }: ClientListProps) {
                   <TableHead>Forma Pago</TableHead>
                   <TableHead>Inicial</TableHead>
                   <TableHead>Cuotas</TableHead>
+                  <TableHead>Migración</TableHead>
                   <TableHead>Estado</TableHead>
                   <TableHead>Opciones</TableHead>
                 </TableRow>
@@ -1325,6 +1506,31 @@ export default function ClientList({ filterType = 'all' }: ClientListProps) {
                       {client.inicial ? `S/ ${client.inicial.toFixed(2)}` : '-'}
                     </TableCell>
                     <TableCell>{client.numeroCuotas || '-'}</TableCell>
+                    <TableCell className="min-w-44">
+                      {!isClientMigrationEligible(client) ? (
+                        <div className="space-y-1">
+                          <Badge variant="secondary">NO APLICA</Badge>
+                          <div className="text-xs text-slate-500">
+                            Cliente nuevo · cronograma vigente
+                          </div>
+                        </div>
+                      ) : isClientMigrationEnabled(client) ? (
+                        <div className="space-y-1">
+                          <Badge className="bg-emerald-600 hover:bg-emerald-600">ACTIVADA</Badge>
+                          <div className="text-xs font-medium">Desde cuota N.° {client.migracionDesdeCuota}</div>
+                          <div className="text-xs text-slate-500">
+                            {getPaymentScheduleConfig(client, Number(client.migracionDesdeCuota)).projectName}
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="space-y-1">
+                          <Badge variant="outline">DESACTIVADA</Badge>
+                          <div className="text-xs text-slate-500">
+                            Base: {getPaymentScheduleConfig(client).projectName}
+                          </div>
+                        </div>
+                      )}
+                    </TableCell>
                     <TableCell>
                       <Badge variant="outline">
                         {getClientStatus(client)}
@@ -1336,7 +1542,7 @@ export default function ClientList({ filterType = 'all' }: ClientListProps) {
                           <Button
                             size="sm"
                             variant="outline"
-                            onClick={() => { setSelectedClient(client.id); setSelectedClientId(client.id); }}
+                            onClick={() => openClientDetail(client)}
                           >
                             <Eye className="w-4 h-4 mr-1" />
                             Cuotas
@@ -1368,7 +1574,11 @@ export default function ClientList({ filterType = 'all' }: ClientListProps) {
 
       {/* Modal de cuotas */}
       {selectedClient && (
-        <Dialog open={true} onOpenChange={() => { setSelectedClient(null); setSelectedClientId(null); }}>
+        <Dialog open={true} onOpenChange={() => {
+          setSelectedClient(null);
+          setSelectedClientId(null);
+          setMigrationStartDraft(null);
+        }}>
   <DialogContent className="w-[98vw] max-w-[1400px] max-h-[92vh] overflow-y-auto">
             <DialogHeader>
               <DialogTitle className="flex items-center justify-between">
@@ -1402,16 +1612,114 @@ export default function ClientList({ filterType = 'all' }: ClientListProps) {
             {(() => {
               const client = clients.find(c => c.id === selectedClient);
               if (!client || !client.cuotas) return null;
+              const regularInstallments = getRegularInstallmentNumbers(client.cuotas);
+              const migrationStart = getMigrationStart(client);
+              const migrationEligible = isClientMigrationEligible(client);
+              const migrationActive = isClientMigrationEnabled(client);
+              const sliderMinimum = regularInstallments[0] ?? 1;
+              const sliderMaximum = regularInstallments[regularInstallments.length - 1] ?? 1;
 
               return (
                 <div className="space-y-4">
-                  <div className="grid grid-cols-2 gap-4 text-sm bg-gray-50 p-4 rounded">
-                    <div><strong>Cliente:</strong> {client.nombre1} {client.nombre2}</div>
-                    <div><strong>DNI:</strong> {client.dni1}</div>
-                    <div><strong>Manzana:</strong> {client.manzana}</div>
-                    <div><strong>Lote:</strong> {client.lote}</div>
-                    <div><strong>Email:</strong> {client.email1 || 'N/A'}</div>
-                    <div><strong>Metraje:</strong> {client.metraje} m²</div>
+                  <div className="grid grid-cols-1 gap-4 rounded bg-gray-50 p-4 lg:grid-cols-[minmax(0,1fr)_16rem]">
+                    <div className="grid grid-cols-1 content-start gap-4 self-start text-sm md:grid-cols-2">
+                      <div><strong>Cliente:</strong> {client.nombre1} {client.nombre2}</div>
+                      <div><strong>DNI:</strong> {client.dni1}</div>
+                      <div><strong>Manzana:</strong> {client.manzana}</div>
+                      <div><strong>Lote:</strong> {client.lote}</div>
+                      <div><strong>Email:</strong> {client.email1 || 'N/A'}</div>
+                      <div><strong>Metraje:</strong> {client.metraje} m²</div>
+                    </div>
+
+                    <div className="w-full space-y-2 self-start rounded-md border bg-white p-3 text-center shadow-sm">
+                        <div className="flex items-center justify-center gap-1.5 text-sm">
+                          <ArrowRightLeft className="h-4 w-4 text-slate-600" />
+                          <strong>Migración:</strong>
+                          <Badge className={migrationActive
+                            ? 'bg-emerald-600 hover:bg-emerald-600'
+                            : migrationEligible
+                              ? 'bg-slate-500 hover:bg-slate-500'
+                              : 'bg-blue-600 hover:bg-blue-600'}>
+                            {migrationActive
+                              ? 'ACTIVADA'
+                              : migrationEligible ? 'DESACTIVADA' : 'NO APLICA'}
+                          </Badge>
+                        </div>
+
+                        {!migrationEligible ? (
+                          <p className="text-xs text-slate-600">
+                            Cliente nuevo: ya utiliza el cronograma vigente.
+                          </p>
+                        ) : (
+                          <>
+                            <div className="space-y-2 border-t pt-2">
+                              <div className="flex items-center justify-between gap-2">
+                                <Label className="text-xs" htmlFor={`migration-slider-${client.id}`}>
+                                  Desde cuota N.°:
+                                </Label>
+                                <span className="min-w-9 rounded bg-emerald-50 px-2 py-0.5 text-center text-base font-bold text-emerald-700">
+                                  {migrationStart}
+                                </span>
+                              </div>
+                              <Slider
+                                id={`migration-slider-${client.id}`}
+                                min={sliderMinimum}
+                                max={sliderMaximum}
+                                step={1}
+                                value={[migrationStart]}
+                                disabled={migrationActive || migrationSaving || regularInstallments.length === 0}
+                                onValueChange={(values) => setMigrationStartDraft(
+                                  clampMigrationStart(values[0], client.cuotas)
+                                )}
+                                aria-label="Cuota desde la que comienza la migración"
+                              />
+                              {migrationActive && (
+                                <p className="text-[11px] font-medium leading-tight text-emerald-700">
+                                  Inicio bloqueado. Desactive para cambiarlo.
+                                </p>
+                              )}
+                              <p className="text-[11px] leading-tight text-slate-600">
+                                {migrationStart > 1 ? `1–${migrationStart - 1}: anterior · ` : ''}
+                                {migrationStart}+: nueva empresa · Inicial: anterior
+                              </p>
+                            </div>
+
+                            <div className="flex justify-center border-t pt-2">
+                              {migrationActive ? (
+                                <AlertDialog>
+                                  <AlertDialogTrigger asChild>
+                                    <Button size="sm" variant="outline" disabled={migrationSaving}>
+                                      Desactivar migración
+                                    </Button>
+                                  </AlertDialogTrigger>
+                                  <AlertDialogContent>
+                                    <AlertDialogHeader>
+                                      <AlertDialogTitle>¿Está seguro de desactivar la migración?</AlertDialogTitle>
+                                      <AlertDialogDescription>
+                                        Al desactivar esta opción, el cliente volverá a utilizar la configuración anterior. Esta acción puede modificar la forma en que se generan sus documentos.
+                                      </AlertDialogDescription>
+                                    </AlertDialogHeader>
+                                    <AlertDialogFooter>
+                                      <AlertDialogCancel>Cancelar</AlertDialogCancel>
+                                      <AlertDialogAction onClick={() => persistMigration(client, false)}>
+                                        Confirmar desactivación
+                                      </AlertDialogAction>
+                                    </AlertDialogFooter>
+                                  </AlertDialogContent>
+                                </AlertDialog>
+                              ) : (
+                                <Button
+                                  size="sm"
+                                  onClick={() => persistMigration(client, true, migrationStart)}
+                                  disabled={migrationSaving || regularInstallments.length === 0}
+                                >
+                                  Activar migración
+                                </Button>
+                              )}
+                            </div>
+                          </>
+                        )}
+                    </div>
                   </div>
                   
                   <div className="mb-4">
@@ -1430,6 +1738,7 @@ export default function ClientList({ filterType = 'all' }: ClientListProps) {
                       <TableHeader>
                         <TableRow>
                   <TableHead className="w-12 sm:w-16 text-left">N°</TableHead>
+                  <TableHead className="w-36 text-left">Configuración</TableHead>
                   <TableHead className="w-28 sm:w-32 text-left">Vencimiento</TableHead>
                   <TableHead className="w-36 sm:w-36 text-left">Monto</TableHead>
                           <TableHead className="w-28 text-left">Mora</TableHead>
@@ -1444,12 +1753,11 @@ export default function ClientList({ filterType = 'all' }: ClientListProps) {
                       </TableHeader>
                       <TableBody>
                         {client.cuotas.map((cuota, index) => {
-                          // Para iniciales no hay mora
-                          const moraCalculada = cuota.numero === 0 ? 0 : calculateMora(cuota.vencimiento, cuota.monto);
-                          // Preferir mora manual solo si fue marcada como manual (manualMora === true)
-                          const displayedMora = (typeof cuota.mora === 'number' && (cuota as any).manualMora === true) ? cuota.mora : moraCalculada;
+                          const displayedMora = getEffectiveMora(cuota);
                           // Mostrar siempre monto + mora (manual o calculada) para reflejar la deuda actual
                           const totalDisplayed = cuota.monto + displayedMora;
+                          const migratedInstallment = isClientMigratedInstallment(client, cuota.numero);
+                          const installmentSchedule = getPaymentScheduleConfig(client, cuota.numero);
                           
                           return (
                             <TableRow key={index}>
@@ -1457,6 +1765,14 @@ export default function ClientList({ filterType = 'all' }: ClientListProps) {
                                 <Badge variant={cuota.numero === 0 ? 'secondary' : 'outline'}>
                                   {cuota.numero === 0 ? 'Inicial' : cuota.numero}
                                 </Badge>
+                              </TableCell>
+                              <TableCell className="w-36 min-w-0">
+                                <Badge variant={migratedInstallment ? 'default' : 'outline'}>
+                                  {migratedInstallment
+                                    ? 'Nueva empresa'
+                                    : migrationEligible ? 'Configuración base' : 'Cronograma vigente'}
+                                </Badge>
+                                <div className="mt-1 text-xs text-slate-500">{installmentSchedule.projectName}</div>
                               </TableCell>
                               <TableCell className="w-28 sm:w-32 min-w-0">
                                 {formatDate(cuota.vencimiento)}
