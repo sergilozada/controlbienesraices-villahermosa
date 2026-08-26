@@ -23,7 +23,7 @@ import {
 import { ArrowRightLeft, Edit, Trash2, Eye, Upload, Download, FileText, RefreshCw } from 'lucide-react';
 import { toast } from 'sonner';
 import { storage } from '@/services/firebase';
-import { ref as storageRef, uploadBytes, getDownloadURL } from 'firebase/storage';
+import { ref as storageRef, uploadBytes, getDownloadURL, deleteObject } from 'firebase/storage';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import {
@@ -193,6 +193,7 @@ export default function ClientList({ filterType = 'all' }: ClientListProps) {
   const [migrationStartDraft, setMigrationStartDraft] = useState<number | null>(null);
   const [migrationSaving, setMigrationSaving] = useState(false);
   const [bulkMigrationUpdating, setBulkMigrationUpdating] = useState(false);
+  const [deletingAttachment, setDeletingAttachment] = useState<string | null>(null);
 
   const getMigrationStart = (client: Client): number => (
     clampMigrationStart(
@@ -581,6 +582,55 @@ export default function ClientList({ filterType = 'all' }: ClientListProps) {
       }
     };
     input.click();
+  };
+
+  const handleDeleteFiles = async (
+    clientId: string,
+    cuotaIndex: number,
+    fileType: 'voucher' | 'boleta',
+    files: Cuota['voucher']
+  ) => {
+    if (!files) return;
+
+    const deletionKey = `${clientId}-${cuotaIndex}-${fileType}`;
+    const rawFiles = Array.isArray(files) ? files : [files];
+    const normalizedFiles = rawFiles.map((item) => (
+      typeof item === 'string' ? { url: item } : item
+    )) as Array<{ url: string; name?: string }>;
+
+    setDeletingAttachment(deletionKey);
+    try {
+      const failedFiles: Array<{ url: string; name?: string }> = [];
+
+      for (const file of normalizedFiles) {
+        try {
+          await deleteObject(storageRef(storage, file.url));
+        } catch (error) {
+          const errorCode = (error as { code?: string })?.code;
+          if (errorCode !== 'storage/object-not-found') {
+            console.error(`Error eliminando ${fileType} de Storage:`, error);
+            failedFiles.push(file);
+          }
+        }
+      }
+
+      if (failedFiles.length === normalizedFiles.length) {
+        toast.error(`No se pudo eliminar ${fileType === 'voucher' ? 'el voucher' : 'la boleta'}`);
+        return;
+      }
+
+      await Promise.resolve(updateCuota(clientId, cuotaIndex, {
+        [fileType]: failedFiles
+      }));
+
+      if (failedFiles.length > 0) {
+        toast.warning('Algunos archivos no pudieron eliminarse y se conservaron');
+      } else {
+        toast.success(`${fileType === 'voucher' ? 'Voucher' : 'Boleta'} eliminado correctamente`);
+      }
+    } finally {
+      setDeletingAttachment(null);
+    }
   };
 
   const downloadAllFiles = (files: Cuota['voucher'], filenamePrefix: string) => {
@@ -1829,6 +1879,37 @@ export default function ClientList({ filterType = 'all' }: ClientListProps) {
                                       <Button size="sm" variant="ghost" onClick={() => downloadAllFiles(cuota.voucher, `voucher_${client.dni1 || 'file'}_${index}`)}>
                                         <Download className="w-4 h-4" />
                                       </Button>
+                                      <AlertDialog>
+                                        <AlertDialogTrigger asChild>
+                                          <Button
+                                            size="sm"
+                                            variant="ghost"
+                                            className="text-red-600 hover:bg-red-50 hover:text-red-700"
+                                            disabled={deletingAttachment === `${selectedClient}-${index}-voucher`}
+                                            aria-label="Eliminar voucher"
+                                            title="Eliminar voucher"
+                                          >
+                                            <Trash2 className="w-4 h-4" />
+                                          </Button>
+                                        </AlertDialogTrigger>
+                                        <AlertDialogContent>
+                                          <AlertDialogHeader>
+                                            <AlertDialogTitle>¿Eliminar el voucher?</AlertDialogTitle>
+                                            <AlertDialogDescription>
+                                              Se eliminarán permanentemente todos los vouchers adjuntos a esta cuota. El pago y los demás datos de la cuota no serán modificados.
+                                            </AlertDialogDescription>
+                                          </AlertDialogHeader>
+                                          <AlertDialogFooter>
+                                            <AlertDialogCancel>Cancelar</AlertDialogCancel>
+                                            <AlertDialogAction
+                                              className="bg-red-600 hover:bg-red-700"
+                                              onClick={() => handleDeleteFiles(selectedClient, index, 'voucher', cuota.voucher)}
+                                            >
+                                              Eliminar voucher
+                                            </AlertDialogAction>
+                                          </AlertDialogFooter>
+                                        </AlertDialogContent>
+                                      </AlertDialog>
                                     </>
                                   )}
                                 </div>
@@ -1846,6 +1927,37 @@ export default function ClientList({ filterType = 'all' }: ClientListProps) {
                                       <Button size="sm" variant="ghost" onClick={() => downloadAllFiles(cuota.boleta, `boleta_${client.dni1 || 'file'}_${index}`)}>
                                         <Download className="w-4 h-4" />
                                       </Button>
+                                      <AlertDialog>
+                                        <AlertDialogTrigger asChild>
+                                          <Button
+                                            size="sm"
+                                            variant="ghost"
+                                            className="text-red-600 hover:bg-red-50 hover:text-red-700"
+                                            disabled={deletingAttachment === `${selectedClient}-${index}-boleta`}
+                                            aria-label="Eliminar boleta"
+                                            title="Eliminar boleta"
+                                          >
+                                            <Trash2 className="w-4 h-4" />
+                                          </Button>
+                                        </AlertDialogTrigger>
+                                        <AlertDialogContent>
+                                          <AlertDialogHeader>
+                                            <AlertDialogTitle>¿Eliminar la boleta?</AlertDialogTitle>
+                                            <AlertDialogDescription>
+                                              Se eliminarán permanentemente todas las boletas adjuntas a esta cuota. El pago y los demás datos de la cuota no serán modificados.
+                                            </AlertDialogDescription>
+                                          </AlertDialogHeader>
+                                          <AlertDialogFooter>
+                                            <AlertDialogCancel>Cancelar</AlertDialogCancel>
+                                            <AlertDialogAction
+                                              className="bg-red-600 hover:bg-red-700"
+                                              onClick={() => handleDeleteFiles(selectedClient, index, 'boleta', cuota.boleta)}
+                                            >
+                                              Eliminar boleta
+                                            </AlertDialogAction>
+                                          </AlertDialogFooter>
+                                        </AlertDialogContent>
+                                      </AlertDialog>
                                     </>
                                   )}
                                 </div>
