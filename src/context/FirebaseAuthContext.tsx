@@ -155,11 +155,17 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       return;
     }
 
-    const clientsQuery = query(
-      collection(db, 'clients'),
-      where('userId', '==', firebaseUser.uid),
-      orderBy('fechaRegistro', 'desc')
-    );
+    const isAdminUser = defaultUsers[firebaseUser.email || '']?.role === 'admin';
+    const clientsQuery = isAdminUser
+      ? query(
+          collection(db, 'clients'),
+          orderBy('fechaRegistro', 'desc')
+        )
+      : query(
+          collection(db, 'clients'),
+          where('userId', '==', firebaseUser.uid),
+          orderBy('fechaRegistro', 'desc')
+        );
 
     // Subscribe with an error callback so we can handle transient network/protocol errors
     const unsubscribe = onSnapshot(clientsQuery, (snapshot) => {
@@ -174,7 +180,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
       // Ensure cuotas are generated for any client that doesn't have them yet (race condition fix)
       clientsData.forEach(c => {
-        if (!c.cuotas || c.cuotas.length === 0) {
+        if (c.userId === firebaseUser.uid && (!c.cuotas || c.cuotas.length === 0)) {
           // fire-and-forget; generateCuotas will fetch the client if necessary
           generateCuotas(c.id).catch(err => console.error('generateCuotas error on snapshot:', err));
         }
@@ -216,10 +222,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       // Verificar si ya existe un cliente con la misma manzana y lote
       // Firestore equality queries are exact; to avoid issues with case/whitespace
       // and eventual consistency, fetch user's clients and compare normalized strings locally.
-      const userClientsQuery = query(
-        collection(db, 'clients'),
-        where('userId', '==', firebaseUser.uid)
-      );
+      const isAdminUser = defaultUsers[firebaseUser.email || '']?.role === 'admin';
+      const userClientsQuery = isAdminUser
+        ? query(collection(db, 'clients'))
+        : query(
+            collection(db, 'clients'),
+            where('userId', '==', firebaseUser.uid)
+          );
       const snapshot = await getDocs(userClientsQuery);
       const normalizedNewManzana = (clientData.manzana || '').toString().trim().toLowerCase();
       const normalizedNewLote = (clientData.lote || '').toString().trim().toLowerCase();
@@ -503,7 +512,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       throw new Error('El cliente no existe o no pertenece al usuario actual.');
     }
     const currentClientData = clientSnapshot.data();
-    if (currentClientData.userId !== firebaseUser.uid) {
+    const isAdminUser = defaultUsers[firebaseUser.email || '']?.role === 'admin';
+    if (currentClientData.userId !== firebaseUser.uid && !isAdminUser) {
       throw new Error('El cliente no existe o no pertenece al usuario actual.');
     }
     if (!isLegacyMigrationEligible(currentClientData, CURRENT_PAYMENT_SCHEDULE_VERSION)) {
@@ -539,10 +549,15 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     // Consultar el estado vigente y limitarlo al usuario autenticado. Se filtra la
     // migración en memoria para no exigir un índice compuesto adicional en Firestore.
-    const ownedClientsSnapshot = await getDocs(query(
-      collection(db, 'clients'),
-      where('userId', '==', firebaseUser.uid)
-    ));
+    const isAdminUser = defaultUsers[firebaseUser.email || '']?.role === 'admin';
+    const ownedClientsSnapshot = await getDocs(
+      isAdminUser
+        ? query(collection(db, 'clients'))
+        : query(
+            collection(db, 'clients'),
+            where('userId', '==', firebaseUser.uid)
+          )
+    );
     const migratedClientRefs = ownedClientsSnapshot.docs
       .filter(clientDoc => (
         isMigrationEnabled(clientDoc.data(), CURRENT_PAYMENT_SCHEDULE_VERSION)
