@@ -1,0 +1,31 @@
+rules_version = '2';
+
+service firebase.storage {
+  match /b/{bucket}/o {
+    function isAdmin() {
+      return request.auth != null &&
+        request.auth.uid in [
+          "bgwcPOqTKxT8jgSlkKXTqM5s4Qz1",
+          "xjbj6FNCG2Q4dNhOiLlrRA6XUNh1"
+        ];
+    }
+
+    // Administradores autorizados: acceso completo a los archivos existentes.
+    match /{allPaths=**} {
+      allow read, write: if isAdmin();
+    }
+
+    // Usuario normal: conserva exactamente el acceso configurado anteriormente.
+    match /clients/C0n1XLJbWSRH5zagr3HhRf7sBiD3/{allPaths=**} {
+      allow read, write: if request.auth != null &&
+        request.auth.uid == "C0n1XLJbWSRH5zagr3HhRf7sBiD3";
+    }
+
+    // Solo lectura: conserva exactamente el acceso configurado anteriormente.
+    match /readonly/U5APUAxreBYiCbc8dBG4SoS3wRx2/{allPaths=**} {
+      allow read: if request.auth != null &&
+        request.auth.uid == "U5APUAxreBYiCbc8dBG4SoS3wRx2";
+      allow write: if false;
+    }
+  }
+}
