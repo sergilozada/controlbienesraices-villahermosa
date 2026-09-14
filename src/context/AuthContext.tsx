@@ -114,8 +114,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   }, [clients]);
 
   const login = (username: string, password: string): boolean => {
-    // Validación simple (en producción usar Firebase Auth)
-    if (defaultUsers[username] && password === 'REMOVED_FROM_GIT_HISTORY') {
+    // El valor se configura fuera del repositorio y Vite lo inyecta al compilar.
+    const configuredPassword = import.meta.env.VITE_ADMIN_PASSWORD;
+    if (defaultUsers[username] && configuredPassword && password === configuredPassword) {
       const loggedUser = defaultUsers[username];
       setUser(loggedUser);
       localStorage.setItem('currentUser', JSON.stringify(loggedUser));

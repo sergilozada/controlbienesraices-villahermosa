@@ -10,6 +10,7 @@ lerna-debug.log*
 # Environment variables
 .env
 .env.local
+.env.production
 .env.*.local
 
 node_modules
